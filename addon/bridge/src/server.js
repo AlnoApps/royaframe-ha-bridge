@@ -1,0 +1,152 @@
+/**
+ * RoyaFrame Bridge Server
+ * Phase-1: Local-only bridge serving via Home Assistant Ingress
+ */
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const ha = require('./ha');
+
+const PORT = 8099; // Must match ingress_port in config.yaml
+
+// MIME types for static files
+const MIME_TYPES = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json'
+};
+
+/**
+ * Serve static files from /public
+ */
+function serveStatic(res, filePath) {
+    const publicDir = path.join(__dirname, '..', 'public');
+    const fullPath = path.join(publicDir, filePath === '/' ? 'index.html' : filePath);
+
+    // Security: prevent path traversal
+    if (!fullPath.startsWith(publicDir)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
+
+    const ext = path.extname(fullPath);
+    const contentType = MIME_TYPES[ext] || 'text/plain';
+
+    fs.readFile(fullPath, (err, data) => {
+        if (err) {
+            res.writeHead(404);
+            res.end('Not Found');
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(data);
+    });
+}
+
+/**
+ * Send JSON response
+ */
+function sendJson(res, data, status = 200) {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+}
+
+/**
+ * Handle API routes
+ */
+async function handleApi(req, res) {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const pathname = url.pathname;
+
+    try {
+        switch (pathname) {
+            case '/health':
+                sendJson(res, {
+                    status: 'ok',
+                    service: 'royaframe-bridge',
+                    version: '1.0.0',
+                    timestamp: new Date().toISOString()
+                });
+                break;
+
+            case '/ha/info':
+                const config = await ha.getConfig();
+                sendJson(res, {
+                    location_name: config.location_name,
+                    version: config.version,
+                    unit_system: config.unit_system,
+                    time_zone: config.time_zone
+                });
+                break;
+
+            case '/ha/entities':
+                const states = await ha.getStates();
+                // Return simplified entity list
+                const entities = states.map(entity => ({
+                    entity_id: entity.entity_id,
+                    state: entity.state,
+                    friendly_name: entity.attributes?.friendly_name || entity.entity_id
+                }));
+                sendJson(res, { entities });
+                break;
+
+            case '/ha/status':
+                const status = await ha.checkConnection();
+                sendJson(res, status);
+                break;
+
+            default:
+                // Not an API route
+                return false;
+        }
+        return true;
+    } catch (error) {
+        console.error(`API error: ${error.message}`);
+        sendJson(res, { error: error.message }, 500);
+        return true;
+    }
+}
+
+/**
+ * Main request handler
+ */
+async function requestHandler(req, res) {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    let pathname = url.pathname;
+
+    // Handle Ingress path prefix - HA strips it but some requests may include it
+    // The ingress path is typically /api/hassio_ingress/<token>/
+    if (pathname.includes('/api/hassio_ingress/')) {
+        const parts = pathname.split('/');
+        const ingressIndex = parts.findIndex(p => p === 'hassio_ingress');
+        if (ingressIndex !== -1 && parts.length > ingressIndex + 2) {
+            pathname = '/' + parts.slice(ingressIndex + 2).join('/');
+        }
+    }
+
+    console.log(`${req.method} ${pathname}`);
+
+    // Try API routes first
+    const isApi = await handleApi({ ...req, url: pathname + url.search }, res);
+    if (isApi) return;
+
+    // Serve static files for everything else
+    serveStatic(res, pathname);
+}
+
+// Create and start server
+const server = http.createServer(requestHandler);
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`RoyaFrame Bridge running on port ${PORT}`);
+    console.log('Phase-1: Local-only mode via Ingress');
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('Shutting down...');
+    server.close(() => process.exit(0));
+});

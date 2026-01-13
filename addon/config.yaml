@@ -1,0 +1,40 @@
+# RoyaFrame Bridge - Home Assistant Add-on Configuration
+# Phase-1: Local-only bridge via Ingress
+
+name: RoyaFrame Bridge
+description: Local bridge between Home Assistant and RoyaFrame
+version: "1.0.0"
+slug: royaframe_bridge
+
+# Multi-architecture support
+arch:
+  - amd64
+  - aarch64
+
+# Ingress configuration - serves UI inside Home Assistant
+ingress: true
+ingress_port: 8099
+ingress_stream: false
+
+# No external ports - Ingress only for Phase-1
+ports: {}
+ports_description: {}
+
+# Home Assistant API access
+homeassistant_api: true
+auth_api: true
+
+# Start on boot
+startup: application
+boot: auto
+
+# Resource management
+init: false
+
+# Add-on options (none required for Phase-1)
+options: {}
+schema: {}
+
+# Container environment
+environment:
+  NODE_ENV: production

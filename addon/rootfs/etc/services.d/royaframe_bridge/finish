@@ -1,0 +1,8 @@
+#!/usr/bin/execlineb -S1
+# RoyaFrame Bridge service finish script
+# Handles graceful shutdown
+
+# Log if service exits unexpectedly
+if { s6-test ${1} -ne 0 }
+if { s6-test ${1} -ne 256 }
+s6-echo "RoyaFrame Bridge exited with code ${1}"

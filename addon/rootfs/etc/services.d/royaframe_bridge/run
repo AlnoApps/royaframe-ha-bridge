@@ -1,0 +1,13 @@
+#!/usr/bin/with-contenv bashio
+# RoyaFrame Bridge service run script
+# Executed by s6-overlay to start the Node.js server
+
+# Log startup
+bashio::log.info "Starting RoyaFrame Bridge..."
+
+# The SUPERVISOR_TOKEN is automatically available in add-on containers
+# when homeassistant_api is enabled in config.yaml
+
+# Start the Node.js server
+cd /app
+exec node src/server.js
