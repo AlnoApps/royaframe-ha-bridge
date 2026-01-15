@@ -17,8 +17,9 @@ RUN npm install --omit=dev
 COPY bridge/src /app/src
 COPY bridge/public /app/public
 
-# Copy s6-overlay service definitions
+# Copy s6-overlay service definitions and set executable permissions
 COPY rootfs /
+RUN chmod +x /etc/services.d/royaframe_bridge/run /etc/services.d/royaframe_bridge/finish
 
 # Labels for Home Assistant
 LABEL \
