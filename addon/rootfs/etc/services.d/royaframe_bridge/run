@@ -1,4 +1,4 @@
 #\!/command/with-contenv sh
 set -e
 echo "[royaframe_bridge] starting..."
-exec node /app/bridge/src/server.js
+exec /usr/bin/node /app/bridge/src/server.js
