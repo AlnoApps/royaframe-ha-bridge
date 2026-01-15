@@ -3,7 +3,7 @@
 
 name: RoyaFrame Bridge
 description: Local bridge between Home Assistant and RoyaFrame
-version: "1.0.0"
+version: "1.0.1"
 slug: royaframe_bridge
 
 # Multi-architecture support
