@@ -1,2 +1,2 @@
-#\!/command/with-contenv sh
+#!/command/with-contenv sh
 echo "[royaframe_bridge] stopped"
