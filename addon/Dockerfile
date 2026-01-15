@@ -4,8 +4,8 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install Node.js
-RUN apk add --no-cache nodejs npm
+# Install Node.js and dos2unix for line ending conversion
+RUN apk add --no-cache nodejs npm dos2unix
 
 # Set working directory
 WORKDIR /app
@@ -17,9 +17,12 @@ RUN npm install --omit=dev
 COPY bridge/src /app/src
 COPY bridge/public /app/public
 
-# Copy s6-overlay service definitions and set executable permissions
+# Copy s6-overlay service definitions
 COPY rootfs /
-RUN chmod +x /etc/services.d/royaframe_bridge/run /etc/services.d/royaframe_bridge/finish
+
+# Fix line endings (Windows CRLF -> Unix LF) and set executable permissions
+RUN dos2unix /etc/services.d/royaframe_bridge/run /etc/services.d/royaframe_bridge/finish \
+    && chmod +x /etc/services.d/royaframe_bridge/run /etc/services.d/royaframe_bridge/finish
 
 # Labels for Home Assistant
 LABEL \
