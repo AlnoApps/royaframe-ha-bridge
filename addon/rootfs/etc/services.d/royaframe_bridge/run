@@ -1,7 +1,4 @@
-#\!/usr/bin/with-contenv bashio
-# RoyaFrame Bridge service run script
-
-bashio::log.info "Starting RoyaFrame Bridge..."
-
-cd /app
-exec node src/server.js
+#\!/command/with-contenv sh
+set -e
+echo "[royaframe_bridge] starting..."
+exec node /app/bridge/src/server.js

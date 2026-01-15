@@ -141,8 +141,7 @@ async function requestHandler(req, res) {
 const server = http.createServer(requestHandler);
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`RoyaFrame Bridge running on port ${PORT}`);
-    console.log('Phase-1: Local-only mode via Ingress');
+    console.log(`[royaframe_bridge] listening on 0.0.0.0:${PORT}`);
 });
 
 // Graceful shutdown
