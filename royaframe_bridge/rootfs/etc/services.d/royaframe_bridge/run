@@ -1,4 +1,21 @@
-#!/command/with-contenv sh
+#!/command/with-contenv bashio
 set -e
 echo "[royaframe_bridge] starting..."
+
+# Ensure options propagate to env even if templating fails.
+if [ "${RELAY_URL:-}" = "{{ .relay_url }}" ] || [ -z "${RELAY_URL:-}" ]; then
+    relay_url="$(bashio::config 'relay_url')"
+    if [ "$relay_url" = "null" ]; then
+        relay_url=""
+    fi
+    export RELAY_URL="$relay_url"
+fi
+if [ "${RELAY_TOKEN:-}" = "{{ .relay_token }}" ] || [ -z "${RELAY_TOKEN:-}" ]; then
+    relay_token="$(bashio::config 'relay_token')"
+    if [ "$relay_token" = "null" ]; then
+        relay_token=""
+    fi
+    export RELAY_TOKEN="$relay_token"
+fi
+
 exec /usr/bin/node /app/bridge/src/server.js
