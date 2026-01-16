@@ -201,8 +201,15 @@ async function requestHandler(req, res) {
 
     console.log(`${req.method} ${pathname}`);
 
-    // Try API routes first
-    const isApi = await handleApi({ ...req, url: pathname + url.search }, res);
+    // Try API routes first (temporarily normalize the URL for routing)
+    const originalUrl = req.url;
+    req.url = pathname + url.search;
+    let isApi;
+    try {
+        isApi = await handleApi(req, res);
+    } finally {
+        req.url = originalUrl;
+    }
     if (isApi) return;
 
     // Serve static files for everything else
