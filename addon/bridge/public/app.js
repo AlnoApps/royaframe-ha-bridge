@@ -7,16 +7,14 @@ let ws = null;
 let entitiesLoaded = false;
 const entityStates = new Map();
 
-// Get the base path for API calls (handles Ingress path)
-function getBasePath() {
-    return '';
-}
-
 /**
  * Make API request to the bridge server
+ * Uses relative paths (./) to work correctly via Ingress proxy
  */
 async function api(endpoint, options = {}) {
-    const response = await fetch(getBasePath() + endpoint, options);
+    // Remove leading slash and use relative path for Ingress compatibility
+    const path = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+    const response = await fetch(`./${path}`, options);
     if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
     }
@@ -160,7 +158,9 @@ async function stopRelay() {
  */
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}${getBasePath()}/ws`;
+    // Build WebSocket URL relative to current page path (for Ingress compatibility)
+    const basePath = window.location.pathname.replace(/\/$/, ''); // Remove trailing slash
+    const wsUrl = `${protocol}//${window.location.host}${basePath}/ws`;
 
     try {
         ws = new WebSocket(wsUrl);
