@@ -177,7 +177,7 @@ Remote access is **outbound only** - no ports need to be opened on your network.
 ### Local Testing
 
 ```bash
-cd addon/bridge
+cd bridge
 npm install
 SUPERVISOR_TOKEN=your_token node src/server.js
 ```
@@ -186,23 +186,22 @@ SUPERVISOR_TOKEN=your_token node src/server.js
 
 ```
 royaframe-ha-bridge/
-├── addon/
-│   ├── config.yaml           # Add-on configuration
-│   ├── Dockerfile            # Container build
-│   ├── bridge/
-│   │   ├── package.json
-│   │   ├── src/
-│   │   │   ├── server.js     # Main HTTP server + routing
-│   │   │   ├── ha.js         # HA REST API client
-│   │   │   ├── haWebSocket.js # HA WebSocket client
-│   │   │   ├── wsServer.js   # Local WebSocket server
-│   │   │   └── relay.js      # Optional relay client
-│   │   └── public/
-│   │       ├── index.html    # Web UI
-│   │       └── app.js        # UI logic
-│   └── rootfs/
-│       └── etc/services.d/   # s6-overlay services
-└── README.md
+├── config.yaml           # Add-on configuration
+├── Dockerfile            # Container build
+├── build.yaml            # Build base images
+├── bridge/
+│   ├── package.json
+│   ├── src/
+│   │   ├── server.js     # Main HTTP server + routing
+│   │   ├── ha.js         # HA REST API client
+│   │   ├── haWebSocket.js # HA WebSocket client
+│   │   ├── wsServer.js   # Local WebSocket server
+│   │   └── relay.js      # Optional relay client
+│   └── public/
+│       ├── index.html    # Web UI
+│       └── app.js        # UI logic
+└── rootfs/
+    └── etc/services.d/   # s6-overlay services
 ```
 
 ## Smoke Test Checklist

@@ -15,6 +15,9 @@ const RELAY_URL = process.env.RELAY_URL;
 const RELAY_TOKEN = process.env.RELAY_TOKEN;
 const BRIDGE_VERSION = require('../package.json').version;
 
+// Log the presence of relay credentials (without printing secrets) for diagnosis.
+console.log(`[relay] env RELAY_URL ${RELAY_URL ? 'set' : 'missing'}, RELAY_TOKEN ${RELAY_TOKEN ? 'set' : 'missing'}`);
+
 class RelayClient extends EventEmitter {
     constructor() {
         super();
