@@ -27,7 +27,6 @@ const STATUS = {
     ERROR: 'error'
 };
 
-const HANDSHAKE_TIMEOUT_MS = 10000;
 const REGISTER_TIMEOUT_MS = 10000;
 
 class RelayClient extends EventEmitter {
@@ -36,14 +35,12 @@ class RelayClient extends EventEmitter {
         this.ws = null;
         this.pairCode = null;
         this.pendingPairCode = null; // Pair code waiting for registration confirmation
-        this.awaitingAgentOk = false;
         this.awaitingRegisterOk = false;
         this.registered = false;
         this.reconnectDelay = 5000;      // Start at 5s
         this.maxReconnectDelay = 300000; // Max 5 minutes
         this.baseReconnectDelay = 5000;
         this.reconnectTimer = null;
-        this.handshakeTimer = null;
         this.registerTimer = null;
         this.enabled = false;
         this.haVersion = null;
@@ -158,30 +155,11 @@ class RelayClient extends EventEmitter {
         this.emit('status_changed', { status, error: this.lastError });
     }
 
-    clearHandshakeTimer() {
-        if (this.handshakeTimer) {
-            clearTimeout(this.handshakeTimer);
-            this.handshakeTimer = null;
-        }
-    }
-
     clearRegisterTimer() {
         if (this.registerTimer) {
             clearTimeout(this.registerTimer);
             this.registerTimer = null;
         }
-    }
-
-    startHandshakeTimeout() {
-        this.clearHandshakeTimer();
-        this.handshakeTimer = setTimeout(() => {
-            if (!this.awaitingAgentOk) return;
-            const errorMsg = 'Handshake timeout: expected agent_ok from relay';
-            console.error(`[relay] ${errorMsg}`);
-            this.setStatus(STATUS.DISCONNECTED, errorMsg);
-            this.invalidatePairCode();
-            if (this.ws) this.ws.terminate();
-        }, HANDSHAKE_TIMEOUT_MS);
     }
 
     startRegisterTimeout() {
@@ -289,9 +267,7 @@ class RelayClient extends EventEmitter {
             console.error(`[relay] ${errorMsg}`);
             this.invalidatePairCode();
             this.emit('disconnected');
-            this.clearHandshakeTimer();
             this.clearRegisterTimer();
-            this.awaitingAgentOk = false;
             this.awaitingRegisterOk = false;
 
             // Destroy the request to clean up
@@ -299,13 +275,11 @@ class RelayClient extends EventEmitter {
         });
 
         this.ws.on('open', () => {
-            console.log('[relay] WebSocket connected; awaiting agent_ok');
+            console.log('[relay] WS open');
             this.lastError = null;
-            this.setStatus(STATUS.CONNECTING);
             this.reconnectDelay = this.baseReconnectDelay; // Reset backoff on success
-            this.awaitingAgentOk = true;
-            this.awaitingRegisterOk = false;
-            this.startHandshakeTimeout();
+            // Immediately send register_bridge after WS handshake
+            this.register();
         });
 
         this.ws.on('message', (data) => {
@@ -314,11 +288,12 @@ class RelayClient extends EventEmitter {
 
         this.ws.on('close', (code, reason) => {
             const reasonStr = reason ? reason.toString() : '';
+            console.log(`[relay] WS close code=${code} reason=${reasonStr}`);
+
+            const wasAwaitingRegister = this.awaitingRegisterOk;
             this.registered = false;
             this.invalidatePairCode();
-            this.awaitingAgentOk = false;
             this.awaitingRegisterOk = false;
-            this.clearHandshakeTimer();
             this.clearRegisterTimer();
 
             // Provide actionable error messages based on close code
@@ -326,13 +301,17 @@ class RelayClient extends EventEmitter {
                 this.status === STATUS.WRONG_ENDPOINT ||
                 this.status === STATUS.CONFIG_ERROR;
 
-            if (code === 1006) {
+            if (wasAwaitingRegister && !preserveStatus) {
+                // Relay closed before we received register_ok
+                const errorMsg = `Relay closed before register_ok (code=${code} reason=${reasonStr || 'none'})`;
+                console.error(`[relay] ${errorMsg}`);
+                this.setStatus(STATUS.ERROR, errorMsg);
+            } else if (code === 1006) {
                 console.error('[relay] Abnormal close (code 1006): Connection was terminated unexpectedly.');
                 if (!preserveStatus) {
                     this.setStatus(STATUS.DISCONNECTED, '1006 Abnormal close: relay server unavailable or rejected connection.');
                 }
             } else if (!preserveStatus) {
-                console.log(`[relay] Connection closed: code=${code} reason=${reasonStr}`);
                 const closeMsg = code ? `Connection closed: ${code}` : 'Connection closed';
                 this.setStatus(STATUS.DISCONNECTED, closeMsg);
             }
@@ -365,7 +344,7 @@ class RelayClient extends EventEmitter {
             pair_code: this.pendingPairCode,
             home_id: homeId
         };
-        console.log(`[relay] Sending register_bridge with pair_code=${this.pendingPairCode}`);
+        console.log(`[relay] Sent register_bridge pair_code=${this.pendingPairCode} home_id=${homeId}`);
         this.send(msg);
     }
 
@@ -383,15 +362,8 @@ class RelayClient extends EventEmitter {
 
         switch (msg.type) {
             case 'agent_ok':
-                if (!this.awaitingAgentOk) {
-                    console.warn('[relay] Unexpected agent_ok; ignoring.');
-                    break;
-                }
-                console.log('[relay] Relay agent_ok received');
-                this.awaitingAgentOk = false;
-                this.clearHandshakeTimer();
-                this.lastError = null;
-                this.register();
+                // Legacy: some relay servers may still send agent_ok
+                console.log('[relay] Received agent_ok (ignored, already registered)');
                 break;
 
             case 'agent_unauthorized': {
@@ -409,7 +381,7 @@ class RelayClient extends EventEmitter {
                     console.warn('[relay] Unexpected register_ok; ignoring.');
                     break;
                 }
-                console.log('[relay] register_ok received - bridge is now registered');
+                console.log('[relay] Received register_ok');
                 this.registered = true;
                 this.awaitingRegisterOk = false;
                 this.clearRegisterTimer();
@@ -544,9 +516,7 @@ class RelayClient extends EventEmitter {
         console.log('[relay] Stopping relay connection');
         this.enabled = false;
         this.shouldRetry = false;
-        this.awaitingAgentOk = false;
         this.awaitingRegisterOk = false;
-        this.clearHandshakeTimer();
         this.clearRegisterTimer();
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
