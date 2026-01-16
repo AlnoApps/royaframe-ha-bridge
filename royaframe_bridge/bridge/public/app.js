@@ -69,7 +69,7 @@ function getRelayStatusDisplay(status) {
         'connected': { text: 'Connected', ok: true, class: 'status-ok' },
         'registering': { text: 'Registering...', ok: false, class: 'status-loading' },
         'registered': { text: 'Registered', ok: true, class: 'status-ok' },
-        'unauthorized': { text: 'Unauthorized', ok: false, class: 'status-error' },
+        'unauthorized': { text: 'Unauthorized (token mismatch)', ok: false, class: 'status-error' },
         'wrong_endpoint': { text: 'Wrong Endpoint', ok: false, class: 'status-error' },
         'error': { text: 'Error', ok: false, class: 'status-error' }
     };

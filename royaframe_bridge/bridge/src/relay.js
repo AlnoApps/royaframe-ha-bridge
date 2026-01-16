@@ -226,8 +226,9 @@ class RelayClient extends EventEmitter {
         }
 
         this.setStatus(STATUS.CONNECTING);
-        const hasAuthHeader = !!(RELAY_TOKEN && RELAY_TOKEN.trim());
-        console.log(`[relay] Connecting to ${RELAY_URL} (Authorization header ${hasAuthHeader ? 'set' : 'missing'})...`);
+        const hasToken = !!(RELAY_TOKEN && RELAY_TOKEN.trim());
+        console.log(`[relay] Connecting to ${RELAY_URL}`);
+        console.log(`[relay] Authorization: Bearer <token> (token set: ${hasToken})`);
 
         try {
             this.ws = new WebSocket(RELAY_URL, {
@@ -462,10 +463,26 @@ class RelayClient extends EventEmitter {
                 this.send({ type: 'pong', request_id: msg.request_id });
                 break;
 
-            case 'error':
-                console.error('[relay] Relay error:', msg.error);
-                this.emit('error', new Error(msg.error));
+            case 'error': {
+                const errorStr = msg.error || 'unknown error';
+                console.error(`[relay] Relay error: ${errorStr}`);
+
+                // Handle unauthorized error gracefully - don't crash
+                if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
+                    const errorMsg = 'Unauthorized: RELAY_TOKEN mismatch or not set on Worker. Check add-on config and Worker environment.';
+                    console.error(`[relay] ${errorMsg}`);
+                    this.shouldRetry = false; // Stop retry loop
+                    this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
+                    this.invalidatePairCode();
+                    this.awaitingRegisterOk = false;
+                    this.clearRegisterTimer();
+                    if (this.ws) this.ws.close(1008, 'unauthorized');
+                } else {
+                    // For other errors, set error status but don't crash
+                    this.setStatus(STATUS.ERROR, `Relay error: ${errorStr}`);
+                }
                 break;
+            }
 
             default:
                 console.log('[relay] Unknown message type:', msg.type);
