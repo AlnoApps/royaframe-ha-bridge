@@ -1,12 +1,16 @@
 /**
  * RoyaFrame Bridge Server
- * Phase-1: Local-only bridge serving via Home Assistant Ingress
+ * Serves via Home Assistant Ingress with WebSocket support for real-time updates.
+ * Optional relay connection for secure remote access.
  */
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const ha = require('./ha');
+const haWS = require('./haWebSocket');
+const wsServer = require('./wsServer');
+const relay = require('./relay');
 
 const PORT = 8099; // Must match ingress_port in config.yaml
 
@@ -55,6 +59,24 @@ function sendJson(res, data, status = 200) {
 }
 
 /**
+ * Parse JSON body from request
+ */
+function parseBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                resolve(body ? JSON.parse(body) : {});
+            } catch (e) {
+                reject(new Error('Invalid JSON'));
+            }
+        });
+        req.on('error', reject);
+    });
+}
+
+/**
  * Handle API routes
  */
 async function handleApi(req, res) {
@@ -67,8 +89,11 @@ async function handleApi(req, res) {
                 sendJson(res, {
                     status: 'ok',
                     service: 'royaframe-bridge',
-                    version: '1.0.0',
-                    timestamp: new Date().toISOString()
+                    version: '1.1.0',
+                    timestamp: new Date().toISOString(),
+                    ha_connected: haWS.isConnected(),
+                    ws_clients: wsServer.getClientCount(),
+                    relay: relay.getStatus()
                 });
                 break;
 
@@ -95,7 +120,54 @@ async function handleApi(req, res) {
 
             case '/ha/status':
                 const status = await ha.checkConnection();
-                sendJson(res, status);
+                sendJson(res, {
+                    ...status,
+                    ws_connected: haWS.isConnected()
+                });
+                break;
+
+            case '/ws/status':
+                sendJson(res, {
+                    ha_connected: haWS.isConnected(),
+                    clients: wsServer.getClientCount()
+                });
+                break;
+
+            case '/relay/status':
+                sendJson(res, relay.getStatus());
+                break;
+
+            case '/relay/pair':
+                if (req.method !== 'POST') {
+                    sendJson(res, { error: 'Method not allowed' }, 405);
+                    break;
+                }
+                const body = await parseBody(req);
+
+                // Set custom pair code if provided
+                if (body.pair_code) {
+                    relay.setPairCode(body.pair_code);
+                } else if (!relay.getPairCode()) {
+                    relay.generatePairCode();
+                }
+
+                // Start relay connection
+                const started = await relay.start();
+
+                sendJson(res, {
+                    success: started,
+                    pair_code: relay.getPairCode(),
+                    status: relay.getStatus()
+                });
+                break;
+
+            case '/relay/stop':
+                if (req.method !== 'POST') {
+                    sendJson(res, { error: 'Method not allowed' }, 405);
+                    break;
+                }
+                relay.stop();
+                sendJson(res, { success: true, status: relay.getStatus() });
                 break;
 
             default:
@@ -140,12 +212,27 @@ async function requestHandler(req, res) {
 // Create and start server
 const server = http.createServer(requestHandler);
 
+// Initialize WebSocket server (handles /ws upgrades)
+wsServer.init(server);
+
+// Connect to Home Assistant WebSocket
+haWS.connect();
+
+// Forward state changes to relay if connected
+haWS.on('state_changed', (data) => {
+    relay.forwardStateChange(data);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`[royaframe_bridge] listening on 0.0.0.0:${PORT}`);
+    console.log(`[royaframe_bridge] WebSocket endpoint: /ws`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('Shutting down...');
+    relay.stop();
+    haWS.close();
+    wsServer.close();
     server.close(() => process.exit(0));
 });

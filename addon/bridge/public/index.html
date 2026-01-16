@@ -107,10 +107,6 @@
     <h1>RoyaFrame Bridge</h1>
     <p class="subtitle">Home Assistant Integration</p>
 
-    <div class="phase-notice">
-        Phase-1: Local-only mode. Remote access will be added in Phase-2.
-    </div>
-
     <div class="status-card">
         <h3>Status</h3>
         <div class="status-row">
@@ -118,18 +114,53 @@
             <span id="bridge-status"><span class="status-indicator status-loading"></span>Checking...</span>
         </div>
         <div class="status-row">
-            <span>Home Assistant</span>
+            <span>Home Assistant REST</span>
             <span id="ha-status"><span class="status-indicator status-loading"></span>Checking...</span>
+        </div>
+        <div class="status-row">
+            <span>Home Assistant WebSocket</span>
+            <span id="ha-ws-status"><span class="status-indicator status-loading"></span>Checking...</span>
         </div>
         <div class="status-row" id="ha-info-row" style="display: none;">
             <span>HA Version</span>
             <span id="ha-version">-</span>
+        </div>
+        <div class="status-row">
+            <span>WebSocket Clients</span>
+            <span id="ws-clients">0</span>
+        </div>
+    </div>
+
+    <div class="status-card" id="relay-card">
+        <h3>Remote Access</h3>
+        <div id="relay-not-configured" style="display: none;">
+            <p style="color: #666; margin: 0 0 12px 0;">
+                Remote access is not configured. Set <code>RELAY_URL</code> and <code>RELAY_TOKEN</code> in add-on options to enable.
+            </p>
+        </div>
+        <div id="relay-configured" style="display: none;">
+            <div class="status-row">
+                <span>Relay Status</span>
+                <span id="relay-status"><span class="status-indicator status-loading"></span>Checking...</span>
+            </div>
+            <div id="pair-section" style="margin-top: 12px;">
+                <div id="pair-code-display" style="display: none; text-align: center; margin: 16px 0;">
+                    <div style="font-size: 13px; color: #666; margin-bottom: 8px;">Pair Code</div>
+                    <div id="pair-code" style="font-size: 32px; font-family: monospace; font-weight: bold; letter-spacing: 4px; color: #03a9f4;">------</div>
+                    <div style="font-size: 12px; color: #888; margin-top: 8px;">Enter this code in the RoyaFrame app to connect</div>
+                </div>
+                <button id="pair-btn" onclick="startPairing()">Generate Pair Code</button>
+                <button id="stop-relay-btn" onclick="stopRelay()" style="display: none; background: #f44336; margin-left: 8px;">Stop Relay</button>
+            </div>
         </div>
     </div>
 
     <div class="status-card">
         <h3>Entities</h3>
         <button id="load-entities-btn" onclick="loadEntities()">Load Entities</button>
+        <span style="margin-left: 12px; color: #666; font-size: 13px;" id="live-indicator" style="display: none;">
+            <span class="status-indicator status-ok"></span>Live updates active
+        </span>
         <div id="entity-count" style="margin-top: 12px; color: #666;"></div>
         <div id="entities-container" class="entity-list" style="margin-top: 12px;"></div>
     </div>
