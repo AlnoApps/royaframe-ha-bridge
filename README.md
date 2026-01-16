@@ -33,6 +33,16 @@ RoyaFrame Bridge runs as a Home Assistant add-on and provides:
 4. Click **Start**
 5. Enable **Show in sidebar** for easy access
 
+### Reinstall After Updates
+
+If you update the repository or add-on layout, do a clean reinstall:
+
+1. Remove the repository from the Add-on Store
+2. Re-add the repository
+3. Uninstall the add-on
+4. Reinstall the add-on
+5. Restart the add-on (or Home Assistant)
+
 ## Usage
 
 ### Local Mode (Default)

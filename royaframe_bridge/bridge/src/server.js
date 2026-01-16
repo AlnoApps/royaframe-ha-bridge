@@ -13,6 +13,7 @@ const wsServer = require('./wsServer');
 const relay = require('./relay');
 
 const PORT = 8099; // Must match ingress_port in config.yaml
+console.log(`[env] RELAY_URL=${process.env.RELAY_URL}`);
 
 // MIME types for static files
 const MIME_TYPES = {
