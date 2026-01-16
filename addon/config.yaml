@@ -43,5 +43,5 @@ schema:
 # Container environment
 environment:
   NODE_ENV: production
-  RELAY_URL: "{{ .relay_url }}"
-  RELAY_TOKEN: "{{ .relay_token }}"
+  RELAY_URL: "{{ .options.relay_url }}"
+  RELAY_TOKEN: "{{ .options.relay_token }}"
