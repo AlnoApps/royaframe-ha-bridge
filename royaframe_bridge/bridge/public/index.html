@@ -101,6 +101,48 @@
             font-size: 13px;
             color: #1565c0;
         }
+        .relay-info {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .relay-info-item {
+            margin-bottom: 4px;
+        }
+        .relay-info-item:last-child {
+            margin-bottom: 0;
+        }
+        .relay-info code {
+            background: #e0e0e0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .relay-error {
+            color: #c62828;
+            background: #ffebee;
+            padding: 10px 12px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            border-left: 3px solid #f44336;
+        }
+        .pair-code-invalid {
+            opacity: 0.5;
+        }
+        .pair-code-invalid #pair-code {
+            color: #999;
+        }
+        .pair-code-invalid::after {
+            content: 'Waiting for relay registration...';
+            display: block;
+            font-size: 11px;
+            color: #ff9800;
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
@@ -133,9 +175,14 @@
 
     <div class="status-card" id="relay-card">
         <h3>Remote Access</h3>
+        <div id="relay-info" class="relay-info">
+            <div class="relay-info-item"><strong>URL:</strong> <code>Loading...</code></div>
+            <div class="relay-info-item"><strong>Token:</strong> Loading...</div>
+        </div>
+        <div id="relay-error" class="relay-error" style="display: none;"></div>
         <div id="relay-not-configured" style="display: none;">
             <p style="color: #666; margin: 0 0 12px 0;">
-                Remote access is not configured. Set <code>RELAY_URL</code> and <code>RELAY_TOKEN</code> in add-on options to enable.
+                Remote access is not configured. Set <code>relay_url</code> and <code>relay_token</code> in add-on options to enable.
             </p>
         </div>
         <div id="relay-configured" style="display: none;">
