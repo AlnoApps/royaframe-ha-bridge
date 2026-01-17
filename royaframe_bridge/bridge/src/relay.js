@@ -545,13 +545,23 @@ class RelayClient extends EventEmitter {
         });
 
         this.ws.on('open', () => {
-            console.log('[relay] WS open');
+            const readyState = this.ws ? this.ws.readyState : 'no ws';
+            console.log(`[relay] WS open event fired, readyState=${readyState}`);
             this.lastError = null;
             this.reconnectDelay = this.baseReconnectDelay;
+            this.setStatus(STATUS.CONNECTED);
+            // Send register_bridge immediately after open
             this.register();
         });
 
         this.ws.on('message', (data) => {
+            // Log every message type for debugging
+            try {
+                const parsed = JSON.parse(data.toString());
+                console.log(`[relay] WS message received: type=${parsed.type || 'unknown'}`);
+            } catch {
+                console.log('[relay] WS message received: (unparseable)');
+            }
             this.handleMessage(data);
         });
 
@@ -619,18 +629,34 @@ class RelayClient extends EventEmitter {
         this.awaitingRegisterOk = true;
         this.startRegisterTimeout();
 
-        const homeId = this.homeId || this.locationName || 'unknown';
+        const pairCode = identity.getPairCode();
+        const agentId = identity.getAgentId();
+        const homeId = this.homeId || this.locationName || 'Home';
+
+        // Build register_bridge message with validated fields
         const msg = {
             type: 'register_bridge',
-            pair_code: identity.getPairCode(),
-            home_id: homeId
+            pair_code: String(pairCode || ''),
+            home_id: String(homeId)
         };
 
-        const agentId = identity.getAgentId();
-        if (agentId) msg.agent_id = agentId;
+        // Only include agent_id if it's a valid string
+        if (agentId && typeof agentId === 'string') {
+            msg.agent_id = agentId;
+        }
 
-        console.log(`[relay] Sent register_bridge home_id=${homeId}`);
-        this.send(msg);
+        // Detailed logging before send
+        console.log(`[relay] WS open -> sending register_bridge:`);
+        console.log(`[relay]   pair_code=${msg.pair_code} (type=${typeof msg.pair_code}, length=${msg.pair_code.length})`);
+        console.log(`[relay]   home_id=${msg.home_id} (type=${typeof msg.home_id})`);
+        console.log(`[relay]   agent_id=${msg.agent_id || '(not set)'} (type=${typeof msg.agent_id})`);
+
+        const sent = this.send(msg);
+        if (sent) {
+            console.log('[relay] register_bridge message sent successfully');
+        } else {
+            console.error('[relay] FAILED to send register_bridge - WebSocket not ready');
+        }
     }
 
     async handleMessage(data) {
@@ -652,10 +678,11 @@ class RelayClient extends EventEmitter {
                     console.warn('[relay] Unexpected register_ok; ignoring.');
                     break;
                 }
-                console.log('[relay] Received register_ok');
+                console.log('[relay] Received register_ok -> registration successful!');
                 this.registered = true;
                 this.awaitingRegisterOk = false;
                 this.clearRegisterTimer();
+                console.log(`[relay] registered=${this.registered}, status will be REGISTERED`);
                 if (msg.agent_id) {
                     identity.setAgentId(msg.agent_id);
                 }
@@ -762,8 +789,27 @@ class RelayClient extends EventEmitter {
     }
 
     send(msg) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
+        if (!this.ws) {
+            console.error('[relay] send() called but this.ws is null');
+            return false;
+        }
+
+        const state = this.ws.readyState;
+        const stateNames = { 0: 'CONNECTING', 1: 'OPEN', 2: 'CLOSING', 3: 'CLOSED' };
+        const stateName = stateNames[state] || `unknown(${state})`;
+
+        if (state !== WebSocket.OPEN) {
+            console.error(`[relay] send() called but WebSocket is ${stateName}, not OPEN`);
+            return false;
+        }
+
+        try {
+            const json = JSON.stringify(msg);
+            this.ws.send(json);
+            return true;
+        } catch (err) {
+            console.error(`[relay] send() failed: ${err.message}`);
+            return false;
         }
     }
 
