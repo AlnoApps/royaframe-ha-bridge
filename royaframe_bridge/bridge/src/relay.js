@@ -467,10 +467,10 @@ class RelayClient extends EventEmitter {
         const publicKey = identity.getPublicKey();
         const keyInfo = identity.getKeyInfo();
 
-        // Debug logging (safe - no actual key values)
-        console.log(`[relay] Challenge request: public_key_string_length=${publicKey.length}, public_key_bytes=${keyInfo.public_key_bytes}`);
+        // Debug logging (safe - no actual key values, only hashes)
+        console.log(`[relay] Challenge request: public_key_string_length=${publicKey.length}, public_key_bytes=${keyInfo.public_key_bytes}, pubkey_hash=${keyInfo.public_key_hash}`);
         if (keyInfo.public_key_bytes !== 32) {
-            console.error(`[relay] WARNING: public_key_bytes should be 32, got ${keyInfo.public_key_bytes}`);
+            console.error(`[relay] ERROR: public_key_bytes must be 32, got ${keyInfo.public_key_bytes}`);
         }
 
         const payload = {
@@ -494,11 +494,11 @@ class RelayClient extends EventEmitter {
         const url = `${this.relayOrigin}/api/agent/issue`;
         const publicKey = identity.getPublicKey();
 
-        // Debug logging for signature (safe - no actual values)
-        const sigByteLen = signature ? Math.ceil((signature.length * 3) / 4) : 0; // Approximate base64url decode length
-        console.log(`[relay] Issue request: signature_string_length=${signature?.length || 0}, estimated_sig_bytes=${sigByteLen}`);
-        if (sigByteLen !== 64 && sigByteLen !== 65) { // base64url can vary by 1 due to padding
-            console.warn(`[relay] WARNING: signature bytes should be 64, estimate is ${sigByteLen}`);
+        // Debug logging for signature (safe - uses actual decode, no values)
+        const sigByteLen = identity.getSignatureByteLength(signature);
+        console.log(`[relay] Issue request: signature_string_length=${signature?.length || 0}, signature_bytes=${sigByteLen}`);
+        if (sigByteLen !== 64) {
+            console.error(`[relay] ERROR: signature bytes must be 64, got ${sigByteLen}`);
         }
 
         const payload = {

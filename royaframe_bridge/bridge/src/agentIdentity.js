@@ -34,37 +34,44 @@ function generatePairCode() {
 }
 
 /**
- * Convert base64url to standard base64.
+ * Decode base64url (or base64) string to Buffer.
+ * Handles both formats, with or without padding.
  */
-function base64UrlToBase64(input) {
-    if (!input) return input;
-    let output = input.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = output.length % 4;
-    if (pad) {
-        output += '='.repeat(4 - pad);
-    }
-    return output;
-}
-
-/**
- * Convert standard base64 to base64url (no padding).
- */
-function base64ToBase64Url(input) {
-    if (!input) return input;
-    return input.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/**
- * Decode a base64 or base64url string to Buffer.
- * Handles both formats and optional padding.
- */
-function decodeBase64Any(input) {
+function base64urlToBytes(input) {
     if (!input || typeof input !== 'string') {
-        throw new Error('Invalid base64 input');
+        throw new Error('Invalid base64url input');
     }
-    // Convert to standard base64 for decoding
-    const base64 = base64UrlToBase64(input);
+    // Replace base64url chars with standard base64 chars
+    let base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+    // Add padding if needed
+    const pad = base64.length % 4;
+    if (pad === 2) {
+        base64 += '==';
+    } else if (pad === 3) {
+        base64 += '=';
+    }
     return Buffer.from(base64, 'base64');
+}
+
+/**
+ * Encode Buffer to base64url string (no padding).
+ */
+function bytesToBase64url(buffer) {
+    if (!Buffer.isBuffer(buffer)) {
+        throw new Error('Input must be a Buffer');
+    }
+    return buffer.toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+}
+
+/**
+ * Compute truncated SHA256 hash for debug logging (first 8 hex chars).
+ */
+function hashForDebug(buffer) {
+    const hash = crypto.createHash('sha256').update(buffer).digest();
+    return hash.subarray(0, 4).toString('hex');
 }
 
 /**
@@ -241,9 +248,9 @@ class AgentIdentity {
         }
 
         // Validate key sizes
-        const pubBytes = decodeBase64Any(this.publicKeyX);
-        const privBytes = decodeBase64Any(this.privateKeyD);
-        console.log(`[identity] Key loaded: public_key_bytes=${pubBytes.length}, private_seed_bytes=${privBytes.length}`);
+        const pubBytes = base64urlToBytes(this.publicKeyX);
+        const privBytes = base64urlToBytes(this.privateKeyD);
+        console.log(`[identity] Key loaded: public_key_bytes=${pubBytes.length}, private_seed_bytes=${privBytes.length}, pubkey_hash=${hashForDebug(pubBytes)}`);
 
         if (pubBytes.length !== 32) {
             throw new Error(`Invalid public key size: expected 32, got ${pubBytes.length}`);
@@ -287,10 +294,11 @@ class AgentIdentity {
      */
     getKeyInfo() {
         this.load();
-        const pubBytes = decodeBase64Any(this.publicKeyX);
+        const pubBytes = base64urlToBytes(this.publicKeyX);
         return {
             public_key_bytes: pubBytes.length,
-            public_key_string_length: this.publicKeyX.length
+            public_key_string_length: this.publicKeyX.length,
+            public_key_hash: hashForDebug(pubBytes)
         };
     }
 
@@ -338,21 +346,22 @@ class AgentIdentity {
         // Decode the nonce from base64/base64url to raw bytes
         let nonceBytes;
         try {
-            nonceBytes = decodeBase64Any(nonceB64);
+            nonceBytes = base64urlToBytes(nonceB64);
         } catch (err) {
             console.error('[identity] Failed to decode nonce:', err.message);
             throw new Error('Invalid nonce encoding');
         }
 
-        console.log(`[identity] Signing nonce: input_length=${nonceB64.length}, decoded_bytes=${nonceBytes.length}`);
+        const nonceHash = hashForDebug(nonceBytes);
+        console.log(`[identity] Signing nonce: input_length=${nonceB64.length}, decoded_bytes=${nonceBytes.length}, nonce_hash=${nonceHash}`);
 
         // Sign the raw nonce bytes with Ed25519
         const signature = crypto.sign(null, nonceBytes, this._privateKeyObj);
 
-        // Convert signature to base64url
-        const signatureB64url = base64ToBase64Url(signature.toString('base64'));
+        // Convert signature to base64url (no padding)
+        const signatureB64url = bytesToBase64url(signature);
 
-        console.log(`[identity] Signature: bytes=${signature.length}, base64url_length=${signatureB64url.length}`);
+        console.log(`[identity] Signature: bytes=${signature.length}, base64url_length=${signatureB64url.length}, sig_hash=${hashForDebug(signature)}`);
 
         if (signature.length !== 64) {
             console.error(`[identity] WARNING: Unexpected signature size: ${signature.length}, expected 64`);
@@ -362,12 +371,25 @@ class AgentIdentity {
     }
 
     /**
+     * Decode a base64url signature and return its byte length.
+     * Used for debug verification.
+     */
+    getSignatureByteLength(signatureB64url) {
+        try {
+            const sigBytes = base64urlToBytes(signatureB64url);
+            return sigBytes.length;
+        } catch {
+            return -1;
+        }
+    }
+
+    /**
      * Verify a signature (for testing).
      */
     verify(nonceB64, signatureB64url) {
         this.load();
-        const nonceBytes = decodeBase64Any(nonceB64);
-        const sigBytes = decodeBase64Any(signatureB64url);
+        const nonceBytes = base64urlToBytes(nonceB64);
+        const sigBytes = base64urlToBytes(signatureB64url);
         return crypto.verify(null, nonceBytes, this._publicKeyObj, sigBytes);
     }
 }
