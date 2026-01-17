@@ -464,8 +464,17 @@ class RelayClient extends EventEmitter {
             throw new Error('relay_origin is not set');
         }
 
+        const publicKey = identity.getPublicKey();
+        const keyInfo = identity.getKeyInfo();
+
+        // Debug logging (safe - no actual key values)
+        console.log(`[relay] Challenge request: public_key_string_length=${publicKey.length}, public_key_bytes=${keyInfo.public_key_bytes}`);
+        if (keyInfo.public_key_bytes !== 32) {
+            console.error(`[relay] WARNING: public_key_bytes should be 32, got ${keyInfo.public_key_bytes}`);
+        }
+
         const payload = {
-            public_key: identity.getPublicKey(),
+            public_key: publicKey,
             agent_info: this.getAgentInfo()
         };
 
@@ -476,15 +485,25 @@ class RelayClient extends EventEmitter {
             throw new Error('Invalid challenge response from relay');
         }
 
+        console.log(`[relay] Challenge received: agent_id=${data.agent_id}, nonce_length=${data.nonce?.length || 0}`);
         identity.setAgentId(data.agent_id);
         return data;
     }
 
     async requestAgentIssue(agentId, signature) {
         const url = `${this.relayOrigin}/api/agent/issue`;
+        const publicKey = identity.getPublicKey();
+
+        // Debug logging for signature (safe - no actual values)
+        const sigByteLen = signature ? Math.ceil((signature.length * 3) / 4) : 0; // Approximate base64url decode length
+        console.log(`[relay] Issue request: signature_string_length=${signature?.length || 0}, estimated_sig_bytes=${sigByteLen}`);
+        if (sigByteLen !== 64 && sigByteLen !== 65) { // base64url can vary by 1 due to padding
+            console.warn(`[relay] WARNING: signature bytes should be 64, estimate is ${sigByteLen}`);
+        }
+
         const payload = {
             agent_id: agentId,
-            public_key: identity.getPublicKey(),
+            public_key: publicKey,
             signature
         };
 
@@ -823,6 +842,10 @@ class RelayClient extends EventEmitter {
     getStatus() {
         const now = Date.now();
         const tokenExpiresIn = this.tokenExpiresAt ? Math.max(0, Math.floor((this.tokenExpiresAt - now) / 1000)) : null;
+
+        // Get key info for key_ok field (only sizes, no secrets)
+        const keyInfo = identity.getKeyInfo();
+
         return {
             configured: this.isConfigured(),
             config_errors: this.getConfigErrors(),
@@ -841,7 +864,11 @@ class RelayClient extends EventEmitter {
             token_set: !!this.agentToken,
             token_expires_in: tokenExpiresIn,
             should_retry: this.shouldRetry,
-            reconnect_delay_ms: this.reconnectDelay
+            reconnect_delay_ms: this.reconnectDelay,
+            key_ok: {
+                public_key_bytes: keyInfo.public_key_bytes,
+                signature_bytes: 64  // Ed25519 signatures are always 64 bytes
+            }
         };
     }
 }
