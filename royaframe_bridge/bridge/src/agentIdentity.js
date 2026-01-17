@@ -9,6 +9,7 @@ const crypto = require('crypto');
 
 const DEFAULT_STORAGE_PATH = process.env.AGENT_IDENTITY_PATH || '/data/royaframe_agent_key.json';
 const PAIR_CODE_BYTES = 3;
+const KEY_FORMAT = 'ed25519-raw-base64';
 
 function normalizePairCode(input) {
     if (!input) return null;
@@ -28,10 +29,42 @@ function generatePairCode() {
     return crypto.randomBytes(PAIR_CODE_BYTES).toString('hex').toUpperCase();
 }
 
+function base64UrlToBase64(input) {
+    if (!input) return input;
+    let output = input.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = output.length % 4;
+    if (pad) {
+        output += '='.repeat(4 - pad);
+    }
+    return output;
+}
+
+function exportPublicKey(publicKey) {
+    try {
+        const jwk = publicKey.export({ format: 'jwk' });
+        if (jwk && jwk.kty === 'OKP' && jwk.x) {
+            return base64UrlToBase64(jwk.x);
+        }
+    } catch (_) {
+        // Fall through to raw export.
+    }
+
+    try {
+        const raw = publicKey.export({ format: 'raw' });
+        return raw.toString('base64');
+    } catch (_) {
+        return null;
+    }
+}
+
 function generateKeyPair() {
     const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const exportedPublic = exportPublicKey(publicKey);
+    if (!exportedPublic) {
+        throw new Error('Unable to export ed25519 public key');
+    }
     return {
-        publicKey: publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
+        publicKey: exportedPublic,
         privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64')
     };
 }
@@ -44,7 +77,7 @@ class AgentIdentity {
         this.agentId = null;
         this.pairCode = null;
         this.createdAt = null;
-        this.format = 'ed25519-der-base64';
+        this.format = KEY_FORMAT;
         this.loaded = false;
     }
 
@@ -60,7 +93,7 @@ class AgentIdentity {
             }
         }
 
-        if (!data || !data.public_key || !data.private_key) {
+        if (!data || !data.private_key) {
             const keys = generateKeyPair();
             this.publicKey = keys.publicKey;
             this.privateKey = keys.privateKey;
@@ -69,12 +102,37 @@ class AgentIdentity {
             this.agentId = null;
             this.save();
         } else {
-            this.publicKey = data.public_key;
-            this.privateKey = data.private_key;
-            this.agentId = data.agent_id || null;
-            this.pairCode = normalizePairCode(data.pair_code) || generatePairCode();
-            this.createdAt = data.created_at || new Date().toISOString();
-            if (!normalizePairCode(data.pair_code)) {
+            try {
+                const privateKey = crypto.createPrivateKey({
+                    key: Buffer.from(data.private_key, 'base64'),
+                    format: 'der',
+                    type: 'pkcs8'
+                });
+                const publicKeyObj = crypto.createPublicKey(privateKey);
+                const exportedPublic = exportPublicKey(publicKeyObj);
+                if (!exportedPublic) {
+                    throw new Error('Unsupported public key export');
+                }
+
+                this.privateKey = data.private_key;
+                this.publicKey = exportedPublic;
+                this.agentId = data.agent_id || null;
+                this.pairCode = normalizePairCode(data.pair_code) || generatePairCode();
+                this.createdAt = data.created_at || new Date().toISOString();
+
+                const pairCodeValid = normalizePairCode(data.pair_code);
+                const formatNeedsUpdate = data.format !== KEY_FORMAT || data.public_key !== this.publicKey || !pairCodeValid;
+                if (formatNeedsUpdate) {
+                    this.save();
+                }
+            } catch (err) {
+                console.error('[identity] Failed to load existing keypair, regenerating:', err.message);
+                const keys = generateKeyPair();
+                this.publicKey = keys.publicKey;
+                this.privateKey = keys.privateKey;
+                this.createdAt = new Date().toISOString();
+                this.pairCode = generatePairCode();
+                this.agentId = null;
                 this.save();
             }
         }
