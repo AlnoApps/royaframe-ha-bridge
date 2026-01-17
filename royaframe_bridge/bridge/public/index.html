@@ -137,7 +137,7 @@
             color: #999;
         }
         .pair-code-invalid::after {
-            content: 'Waiting for relay registration...';
+            content: 'Relay not connected yet.';
             display: block;
             font-size: 11px;
             color: #ff9800;
@@ -176,13 +176,13 @@
     <div class="status-card" id="relay-card">
         <h3>Remote Access</h3>
         <div id="relay-info" class="relay-info">
-            <div class="relay-info-item"><strong>URL:</strong> <code>Loading...</code></div>
-            <div class="relay-info-item"><strong>Token:</strong> Loading...</div>
+            <div class="relay-info-item"><strong>Relay Origin:</strong> <code>Loading...</code></div>
+            <div class="relay-info-item"><strong>Agent ID:</strong> <code>Loading...</code></div>
         </div>
         <div id="relay-error" class="relay-error" style="display: none;"></div>
         <div id="relay-not-configured" style="display: none;">
             <p style="color: #666; margin: 0 0 12px 0;">
-                Remote access is not configured. Set <code>relay_url</code> and <code>relay_token</code> in add-on options to enable.
+                Relay origin is not configured or invalid. Set <code>RELAY_URL</code> or provide a relay override file.
             </p>
         </div>
         <div id="relay-configured" style="display: none;">
@@ -194,9 +194,9 @@
                 <div id="pair-code-display" style="display: none; text-align: center; margin: 16px 0;">
                     <div style="font-size: 13px; color: #666; margin-bottom: 8px;">Pair Code</div>
                     <div id="pair-code" style="font-size: 32px; font-family: monospace; font-weight: bold; letter-spacing: 4px; color: #03a9f4;">------</div>
-                    <div style="font-size: 12px; color: #888; margin-top: 8px;">Enter this code in the RoyaFrame app to connect</div>
+                    <div style="font-size: 12px; color: #888; margin-top: 8px;">Enter this code in royaframe.io to connect</div>
                 </div>
-                <button id="pair-btn" onclick="startPairing()">Generate Pair Code</button>
+                <button id="pair-btn" onclick="startPairing()">Regenerate Pair Code</button>
                 <button id="stop-relay-btn" onclick="stopRelay()" style="display: none; background: #f44336; margin-left: 8px;">Stop Relay</button>
             </div>
         </div>

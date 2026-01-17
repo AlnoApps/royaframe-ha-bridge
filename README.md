@@ -9,7 +9,7 @@ RoyaFrame Bridge runs as a Home Assistant add-on and provides:
 - A web interface accessible via Home Assistant Ingress (sidebar)
 - REST API endpoints to query Home Assistant entities and status
 - WebSocket endpoint (`/ws`) for real-time state updates
-- Optional secure remote access via outbound relay connection (no open ports required)
+- Secure remote access via outbound relay using a per-install keypair and pair code (no open ports required)
 
 ## Installation
 
@@ -51,7 +51,7 @@ After installation, access RoyaFrame Bridge from the Home Assistant sidebar. The
 
 - **Bridge Status**: Server running, HA REST/WebSocket connections
 - **WebSocket Clients**: Number of connected local clients
-- **Remote Access**: Pairing status (if configured)
+- **Remote Access**: Pair code and relay status
 - **Entities**: View all entities with live updates
 
 Connect to the WebSocket endpoint at `/ws` for real-time state updates:
@@ -79,15 +79,29 @@ ws.send(JSON.stringify({
 
 ### Pairing Mode (Remote Access)
 
-To enable secure remote access from the RoyaFrame app:
+To enable secure remote access from royaframe.io:
 
-1. Configure add-on options with `relay_url` and `relay_token` (provided by RoyaFrame)
+1. Install the add-on and click **Start** (no relay config required)
 2. Open the bridge UI in Home Assistant
-3. Click **Generate Pair Code** in the Remote Access section
-4. Enter the 6-character code in the RoyaFrame app
-5. Once paired, the connection is established and the code is invalidated
+3. Copy the 6-character pair code
+4. Paste the code into royaframe.io to pair
+5. The relay connects automatically while you are viewing
 
 Remote access is **outbound only** - no ports need to be opened on your network.
+
+### Advanced Relay Override (Optional)
+
+To override the default relay origin, create this file inside the add-on data folder:
+
+```
+/data/royaframe_relay_override.json
+```
+
+Example contents:
+
+```json
+{ "relay_origin": "https://your-relay.example" }
+```
 
 ## API Endpoints
 
@@ -100,8 +114,9 @@ Remote access is **outbound only** - no ports need to be opened on your network.
 | `/ha/info` | GET | Home Assistant configuration info |
 | `/ha/entities` | GET | List all entities with states |
 | `/ws/status` | GET | WebSocket server status |
-| `/relay/status` | GET | Relay connection status |
-| `/relay/pair` | POST | Start pairing mode (optional: `{pair_code}`) |
+| `/relay/status` | GET | Relay status (pair code, agent id, connection state, worker_status) |
+| `/relay/pair` | POST | Regenerate pair code and (re)start relay (optional: `{pair_code}`) |
+| `/relay/regenerate-code` | POST | Regenerate the current pair code |
 | `/relay/stop` | POST | Stop relay connection |
 
 ### WebSocket Protocol (`/ws`)
@@ -189,7 +204,7 @@ Remote access is **outbound only** - no ports need to be opened on your network.
 ```bash
 cd royaframe_bridge/bridge
 npm install
-SUPERVISOR_TOKEN=your_token node src/server.js
+SUPERVISOR_TOKEN=your_token RELAY_URL=https://your-relay.example node src/server.js
 ```
 
 ### Project Structure
@@ -244,9 +259,9 @@ After installing/updating the add-on, verify:
    curl http://localhost:8099/ws/status
    ```
 
-5. **Relay Mode** (if configured)
-   - Click "Generate Pair Code"
-   - Verify 6-character code appears
+5. **Relay Mode**
+   - Verify a 6-character pair code appears in the UI
+   - Paste the code into royaframe.io
    - Verify relay status shows "Connected" then "Registered"
 
 ## Roadmap

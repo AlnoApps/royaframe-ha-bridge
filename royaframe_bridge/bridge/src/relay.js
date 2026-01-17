@@ -1,104 +1,172 @@
 /**
  * Relay Client
  * Optional outbound WebSocket connection to a cloud relay server.
- * Enables secure remote access without opening inbound ports.
+ * Uses per-install ed25519 identity and challenge-response auth.
  */
 
 const WebSocket = require('ws');
 const EventEmitter = require('events');
-const crypto = require('crypto');
+const fs = require('fs');
 const haWS = require('./haWebSocket');
 const ha = require('./ha');
+const identity = require('./agentIdentity');
 
-// Environment configuration (trim to avoid whitespace issues)
-const RELAY_URL = (process.env.RELAY_URL || '').trim();
-const RELAY_TOKEN = (process.env.RELAY_TOKEN || '').trim();
+const DEFAULT_RELAY_ORIGIN = 'https://digital-twin.lavvimaa.workers.dev';
+const RELAY_OVERRIDE_PATH = process.env.RELAY_OVERRIDE_PATH || '/data/royaframe_relay_override.json';
 
-// Connection status constants
 const STATUS = {
     DISCONNECTED: 'disconnected',
     CONFIG_ERROR: 'config_error',
     CONNECTING: 'connecting',
+    AUTHENTICATING: 'authenticating',
     CONNECTED: 'connected',
     REGISTERING: 'registering',
     REGISTERED: 'registered',
     UNAUTHORIZED: 'unauthorized',
-    WRONG_ENDPOINT: 'wrong_endpoint',
+    IDLE: 'idle',
     ERROR: 'error'
 };
 
 const REGISTER_TIMEOUT_MS = 10000;
+const TOKEN_REFRESH_SAFETY_MS = 60000;
+const MIN_TOKEN_TTL_SECONDS = 60;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_POLL_INTERVAL_MS = 30000;
+
+function normalizeRelayOrigin(value) {
+    if (!value || typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+        const url = new URL(trimmed);
+        if (url.protocol === 'ws:' || url.protocol === 'wss:') {
+            url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+        }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+        return url.origin;
+    } catch {
+        return null;
+    }
+}
+
+function loadRelayOverride() {
+    if (!fs.existsSync(RELAY_OVERRIDE_PATH)) return null;
+    try {
+        const raw = fs.readFileSync(RELAY_OVERRIDE_PATH, 'utf8');
+        const data = JSON.parse(raw);
+        if (data && typeof data === 'object') {
+            return data.relay_origin || data.relay_url || null;
+        }
+    } catch (err) {
+        console.error(`[relay] Failed to parse relay override file: ${err.message}`);
+    }
+    return null;
+}
+
+function resolveRelayOrigin() {
+    const override = loadRelayOverride();
+    if (override) {
+        const origin = normalizeRelayOrigin(override);
+        return { origin, source: origin ? 'override' : 'override_invalid' };
+    }
+
+    const envValue = process.env.RELAY_URL || '';
+    if (envValue.trim()) {
+        const origin = normalizeRelayOrigin(envValue);
+        return { origin, source: origin ? 'env' : 'env_invalid' };
+    }
+
+    return { origin: normalizeRelayOrigin(DEFAULT_RELAY_ORIGIN), source: 'default' };
+}
+
+function extractAppCount(data) {
+    if (!data || typeof data !== 'object') return null;
+    const keys = [
+        'app_count',
+        'appCount',
+        'viewer_count',
+        'viewerCount',
+        'active_viewers',
+        'activeViewers'
+    ];
+    for (const key of keys) {
+        if (typeof data[key] === 'number') return data[key];
+    }
+    return null;
+}
 
 class RelayClient extends EventEmitter {
     constructor() {
         super();
+        const resolved = resolveRelayOrigin();
+        this.relayOrigin = resolved.origin;
+        this.relayOriginSource = resolved.source;
+        this.relayOriginValid = !!this.relayOrigin;
+
         this.ws = null;
-        this.pairCode = null;
-        this.pendingPairCode = null; // Pair code waiting for registration confirmation
+        this.wsUrl = null;
+        this.agentToken = null;
+        this.tokenExpiresAt = null;
+        this.tokenRefreshTimer = null;
+        this.authPromise = null;
+        this.connecting = false;
+
         this.awaitingRegisterOk = false;
         this.registered = false;
-        this.reconnectDelay = 5000;      // Start at 5s
-        this.maxReconnectDelay = 300000; // Max 5 minutes
-        this.baseReconnectDelay = 5000;
-        this.reconnectTimer = null;
         this.registerTimer = null;
+
+        this.baseReconnectDelay = 5000;
+        this.reconnectDelay = this.baseReconnectDelay;
+        this.maxReconnectDelay = 300000;
+        this.reconnectTimer = null;
+        this.forceReconnect = false;
+
         this.enabled = false;
+        this.shouldRetry = true;
         this.haVersion = null;
         this.locationName = null;
         this.homeId = null;
         this.status = STATUS.DISCONNECTED;
         this.lastError = null;
-        this.shouldRetry = true; // Set to false on config/auth errors
+
+        this.appCount = null;
+        this.lastAppCountAt = null;
+        this.idleState = 'active';
+        this.idleTimer = null;
+        this.idlePollTimer = null;
+        this.idleClosing = false;
     }
 
-    /**
-     * Validate relay URL format
-     */
-    validateUrl(url) {
-        if (!url) return { valid: false, reason: 'relay_url is not set' };
-        if (typeof url !== 'string') return { valid: false, reason: 'relay_url must be a string' };
-        const trimmed = url.trim();
-        if (!trimmed) return { valid: false, reason: 'relay_url is empty' };
-        if (!trimmed.startsWith('ws://') && !trimmed.startsWith('wss://')) {
-            return { valid: false, reason: 'relay_url must start with ws:// or wss://' };
+    validateOrigin(origin) {
+        if (!origin) return { valid: false, reason: 'relay_origin is not set' };
+        if (typeof origin !== 'string') return { valid: false, reason: 'relay_origin must be a string' };
+        const trimmed = origin.trim();
+        if (!trimmed) return { valid: false, reason: 'relay_origin is empty' };
+        if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+            return { valid: false, reason: 'relay_origin must start with http:// or https://' };
         }
         return { valid: true };
     }
 
-    /**
-     * Validate relay token
-     */
-    validateToken(token) {
-        if (!token) return { valid: false, reason: 'relay_token is not set' };
-        if (typeof token !== 'string') return { valid: false, reason: 'relay_token must be a string' };
-        if (!token.trim()) return { valid: false, reason: 'relay_token is empty' };
-        return { valid: true };
-    }
-
-    /**
-     * Check if relay is configured with valid values
-     */
     isConfigured() {
-        const urlCheck = this.validateUrl(RELAY_URL);
-        const tokenCheck = this.validateToken(RELAY_TOKEN);
-        return urlCheck.valid && tokenCheck.valid;
+        return this.relayOriginValid;
     }
 
-    /**
-     * Get configuration validation errors
-     */
     getConfigErrors() {
         const errors = [];
-        const urlCheck = this.validateUrl(RELAY_URL);
-        const tokenCheck = this.validateToken(RELAY_TOKEN);
-        if (!urlCheck.valid) errors.push(urlCheck.reason);
-        if (!tokenCheck.valid) errors.push(tokenCheck.reason);
+        const originCheck = this.validateOrigin(this.relayOrigin || '');
+        if (!originCheck.valid) {
+            if (this.relayOriginSource === 'env_invalid') {
+                errors.push('RELAY_URL is invalid');
+            } else if (this.relayOriginSource === 'override_invalid') {
+                errors.push('relay override file contains an invalid relay_origin');
+            } else {
+                errors.push(originCheck.reason);
+            }
+        }
         return errors;
     }
 
-    /**
-     * Derive a stable home identifier from HA config
-     */
     deriveHomeId(config) {
         if (!config || typeof config !== 'object') return null;
         return (
@@ -111,44 +179,16 @@ class RelayClient extends EventEmitter {
         );
     }
 
-    /**
-     * Generate a new pairing code (internal - not exposed until registered)
-     */
-    generatePairCode() {
-        // Generate a 6-character alphanumeric code
-        this.pendingPairCode = crypto.randomBytes(3).toString('hex').toUpperCase();
-        return this.pendingPairCode;
+    getAgentInfo() {
+        const info = {};
+        if (this.homeId) info.home_id = this.homeId;
+        if (this.locationName) info.location_name = this.locationName;
+        if (this.haVersion) info.ha_version = this.haVersion;
+        const agentId = identity.getAgentId();
+        if (agentId) info.agent_id = agentId;
+        return info;
     }
 
-    /**
-     * Get the current pairing code (only valid if registered)
-     */
-    getPairCode() {
-        // Only return pair code if we're registered with the relay
-        return this.registered ? this.pairCode : null;
-    }
-
-    /**
-     * Set a specific pairing code (for UI input)
-     */
-    setPairCode(code) {
-        this.pendingPairCode = code;
-        if (this.registered) {
-            this.pairCode = code;
-        }
-    }
-
-    /**
-     * Invalidate pair code (on disconnect or error)
-     */
-    invalidatePairCode() {
-        this.pairCode = null;
-        // Keep pendingPairCode so we can re-register with the same code
-    }
-
-    /**
-     * Set status and emit event
-     */
     setStatus(status, error = null) {
         this.status = status;
         if (error) this.lastError = error;
@@ -168,32 +208,134 @@ class RelayClient extends EventEmitter {
             if (!this.awaitingRegisterOk) return;
             const errorMsg = 'Registration timeout: expected register_ok from relay';
             console.error(`[relay] ${errorMsg}`);
-            this.setStatus(STATUS.DISCONNECTED, errorMsg);
-            this.invalidatePairCode();
+            this.setStatus(STATUS.ERROR, errorMsg);
             if (this.ws) this.ws.terminate();
         }, REGISTER_TIMEOUT_MS);
     }
 
-    /**
-     * Start the relay connection
-     */
+    clearTokenRefreshTimer() {
+        if (this.tokenRefreshTimer) {
+            clearTimeout(this.tokenRefreshTimer);
+            this.tokenRefreshTimer = null;
+        }
+    }
+
+    scheduleTokenRefresh() {
+        this.clearTokenRefreshTimer();
+        if (!this.tokenExpiresAt) return;
+        const now = Date.now();
+        const refreshIn = Math.max(this.tokenExpiresAt - now - TOKEN_REFRESH_SAFETY_MS, 10000);
+        this.tokenRefreshTimer = setTimeout(() => {
+            this.tokenRefreshTimer = null;
+            this.refreshToken();
+        }, refreshIn);
+    }
+
+    refreshToken() {
+        this.agentToken = null;
+        this.tokenExpiresAt = null;
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.forceReconnect = true;
+            this.ws.close(1000, 'token_refresh');
+            return;
+        }
+        this.connect();
+    }
+
+    clearIdleTimer() {
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
+    }
+
+    clearIdlePoll() {
+        if (this.idlePollTimer) {
+            clearInterval(this.idlePollTimer);
+            this.idlePollTimer = null;
+        }
+    }
+
+    scheduleIdleCheck() {
+        if (this.idleTimer || this.appCount !== 0) return;
+        this.idleState = 'pending';
+        this.idleTimer = setTimeout(() => {
+            if (this.appCount !== 0) return;
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            this.enterIdle();
+        }, IDLE_TIMEOUT_MS);
+    }
+
+    enterIdle() {
+        this.clearIdleTimer();
+        this.idleState = 'idle';
+        this.idleClosing = true;
+        if (this.ws) {
+            this.ws.close(1000, 'idle');
+        }
+        this.startIdlePoll();
+    }
+
+    startIdlePoll() {
+        if (this.idlePollTimer) return;
+        this.idlePollTimer = setInterval(() => {
+            this.checkForViewers();
+        }, IDLE_POLL_INTERVAL_MS);
+    }
+
+    async checkForViewers() {
+        const httpOrigin = this.getWorkerHttpOrigin();
+        if (!httpOrigin) return;
+        const statusUrl = `${httpOrigin}/api/status`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+        try {
+            const response = await fetch(statusUrl, {
+                signal: controller.signal,
+                headers: { 'Accept': 'application/json' }
+            });
+            clearTimeout(timeoutId);
+
+            if (!response.ok) return;
+            const data = await response.json();
+            const count = extractAppCount(data);
+            if (typeof count === 'number' && count > 0) {
+                this.appCount = count;
+                this.idleState = 'active';
+                this.clearIdlePoll();
+                this.connect();
+            }
+        } catch (err) {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    updateAppCount(count) {
+        if (typeof count !== 'number') return;
+        this.appCount = count;
+        this.lastAppCountAt = Date.now();
+
+        if (count > 0) {
+            this.idleState = 'active';
+            this.clearIdleTimer();
+            this.clearIdlePoll();
+            return;
+        }
+
+        this.scheduleIdleCheck();
+    }
+
     async start() {
-        // Validate configuration first
         const configErrors = this.getConfigErrors();
         if (configErrors.length > 0) {
             const errorMsg = `CONFIG ERROR: ${configErrors.join('; ')}`;
             console.error(`[relay] ${errorMsg}`);
-            console.error('[relay] Please check your add-on configuration and set valid relay_url and relay_token.');
             this.setStatus(STATUS.CONFIG_ERROR, errorMsg);
-            this.shouldRetry = false; // Don't retry on config errors
+            this.shouldRetry = false;
             return false;
         }
 
-        if (!this.pendingPairCode) {
-            this.generatePairCode();
-        }
-
-        // Fetch HA info for registration
         try {
             const config = await ha.getConfig();
             this.haVersion = config.version;
@@ -206,35 +348,158 @@ class RelayClient extends EventEmitter {
         this.enabled = true;
         this.shouldRetry = true;
         this.lastError = null;
-        this.reconnectDelay = this.baseReconnectDelay; // Reset backoff
+        this.reconnectDelay = this.baseReconnectDelay;
         this.connect();
         return true;
     }
 
-    /**
-     * Connect to the relay server
-     */
-    connect() {
+    async connect() {
         if (!this.enabled) return;
-        if (!this.shouldRetry) {
-            console.log('[relay] Not retrying due to config/auth error. Fix configuration and restart.');
-            return;
-        }
+        if (!this.shouldRetry) return;
+        if (this.connecting) return;
 
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
             return;
         }
 
+        if (this.idleState === 'idle') {
+            this.clearIdlePoll();
+            this.idleState = 'active';
+        }
+
+        this.connecting = true;
         this.setStatus(STATUS.CONNECTING);
-        const hasToken = !!RELAY_TOKEN;
-        const tokenLen = RELAY_TOKEN ? RELAY_TOKEN.length : 0;
-        console.log(`[relay] Connecting to ${RELAY_URL}`);
-        console.log(`[relay] Authorization: Bearer <token> (token set: ${hasToken}, length: ${tokenLen})`);
 
         try {
-            this.ws = new WebSocket(RELAY_URL, {
+            const auth = await this.ensureAgentToken();
+            if (!auth || !auth.wsUrl) {
+                throw new Error('Missing ws_url from relay');
+            }
+            this.openWebSocket(auth.wsUrl, auth.agentToken);
+        } catch (err) {
+            const errorMsg = `Relay connect failed: ${err.message}`;
+            console.error(`[relay] ${errorMsg}`);
+            this.setStatus(STATUS.ERROR, errorMsg);
+            this.scheduleReconnect();
+        } finally {
+            this.connecting = false;
+        }
+    }
+
+    async ensureAgentToken() {
+        const now = Date.now();
+        if (this.agentToken && this.tokenExpiresAt && (this.tokenExpiresAt - now > TOKEN_REFRESH_SAFETY_MS)) {
+            return { agentToken: this.agentToken, wsUrl: this.wsUrl };
+        }
+        return this.authenticate();
+    }
+
+    async authenticate() {
+        if (this.authPromise) return this.authPromise;
+        this.authPromise = (async () => {
+            this.setStatus(STATUS.AUTHENTICATING);
+            const challenge = await this.requestAgentChallenge();
+            const signature = identity.sign(challenge.nonce);
+            const issue = await this.requestAgentIssue(challenge.agent_id, signature);
+
+            if (!issue.agent_token || !issue.ws_url) {
+                throw new Error('Invalid token response from relay');
+            }
+
+            const now = Date.now();
+            const expiresIn = Number(issue.token_expires_in) || 300;
+            const ttlSeconds = Math.max(expiresIn, MIN_TOKEN_TTL_SECONDS);
+
+            this.agentToken = issue.agent_token;
+            this.wsUrl = issue.ws_url;
+            this.tokenExpiresAt = now + ttlSeconds * 1000;
+            this.scheduleTokenRefresh();
+
+            const tokenLen = this.agentToken ? this.agentToken.length : 0;
+            console.log(`[relay] Agent token issued (set: ${!!this.agentToken}, length: ${tokenLen}, ttl_s: ${ttlSeconds})`);
+
+            return { agentToken: this.agentToken, wsUrl: this.wsUrl };
+        })();
+
+        try {
+            return await this.authPromise;
+        } finally {
+            this.authPromise = null;
+        }
+    }
+
+    async postJson(url, body, timeoutMs = 8000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${RELAY_TOKEN}`
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+
+            const text = await response.text();
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${text || response.statusText}`);
+            }
+            if (!text) return {};
+            return JSON.parse(text);
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                throw new Error(`Timeout after ${timeoutMs}ms`);
+            }
+            throw err;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+
+    async requestAgentChallenge() {
+        if (!this.relayOrigin) {
+            throw new Error('relay_origin is not set');
+        }
+
+        const payload = {
+            public_key: identity.getPublicKey(),
+            agent_info: this.getAgentInfo()
+        };
+
+        const url = `${this.relayOrigin}/api/agent/challenge`;
+        const data = await this.postJson(url, payload, 8000);
+
+        if (!data.agent_id || !data.nonce) {
+            throw new Error('Invalid challenge response from relay');
+        }
+
+        identity.setAgentId(data.agent_id);
+        return data;
+    }
+
+    async requestAgentIssue(agentId, signature) {
+        const url = `${this.relayOrigin}/api/agent/issue`;
+        const payload = {
+            agent_id: agentId,
+            public_key: identity.getPublicKey(),
+            signature
+        };
+
+        return this.postJson(url, payload, 8000);
+    }
+
+    openWebSocket(wsUrl, agentToken) {
+        const tokenLen = agentToken ? agentToken.length : 0;
+        console.log(`[relay] Connecting to ${wsUrl}`);
+        console.log(`[relay] Authorization: Bearer <token> (token set: ${!!agentToken}, length: ${tokenLen})`);
+
+        try {
+            this.ws = new WebSocket(wsUrl, {
+                headers: {
+                    'Authorization': `Bearer ${agentToken}`
                 }
             });
         } catch (err) {
@@ -244,48 +509,26 @@ class RelayClient extends EventEmitter {
             return;
         }
 
-        // Handle HTTP responses before upgrade (detects 401, 200, etc.)
         this.ws.on('unexpected-response', (req, res) => {
             const statusCode = res.statusCode;
-            let errorMsg;
+            const errorMsg = `HTTP ${statusCode} during WebSocket upgrade`;
 
-            if (statusCode === 401) {
-                // Best-effort diagnosis: we can only know our own state
-                if (!RELAY_TOKEN) {
-                    errorMsg = '401 Unauthorized: add-on RELAY_TOKEN is empty. Set relay_token in add-on config.';
-                } else {
-                    errorMsg = '401 Unauthorized: worker secret missing or token mismatch. Check worker /api/status and verify RELAY_TOKEN matches.';
-                }
-                this.shouldRetry = false; // Don't retry auth errors
-                this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
-            } else if (statusCode === 400) {
-                errorMsg = '400 Bad Request: wrong endpoint / no websocket upgrade / bad request.';
-                this.shouldRetry = false; // Don't retry wrong endpoint
-                this.setStatus(STATUS.WRONG_ENDPOINT, errorMsg);
-            } else if (statusCode === 200) {
-                errorMsg = '200 OK: wrong endpoint / no websocket upgrade.';
-                this.shouldRetry = false; // Don't retry wrong endpoint
-                this.setStatus(STATUS.WRONG_ENDPOINT, errorMsg);
+            if (statusCode === 401 || statusCode === 403) {
+                this.handleUnauthorized(errorMsg);
+            } else if (statusCode === 400 || statusCode === 200) {
+                this.setStatus(STATUS.ERROR, 'Wrong endpoint or no websocket upgrade');
             } else {
-                errorMsg = `Unexpected server response: HTTP ${statusCode}`;
                 this.setStatus(STATUS.ERROR, errorMsg);
             }
 
             console.error(`[relay] ${errorMsg}`);
-            this.invalidatePairCode();
-            this.emit('disconnected');
-            this.clearRegisterTimer();
-            this.awaitingRegisterOk = false;
-
-            // Destroy the request to clean up
             req.destroy();
         });
 
         this.ws.on('open', () => {
             console.log('[relay] WS open');
             this.lastError = null;
-            this.reconnectDelay = this.baseReconnectDelay; // Reset backoff on success
-            // Immediately send register_bridge after WS handshake
+            this.reconnectDelay = this.baseReconnectDelay;
             this.register();
         });
 
@@ -297,67 +540,80 @@ class RelayClient extends EventEmitter {
             const reasonStr = reason ? reason.toString() : '';
             console.log(`[relay] WS close code=${code} reason=${reasonStr}`);
 
-            const wasAwaitingRegister = this.awaitingRegisterOk;
+            const wasIdleClose = this.idleClosing;
+            this.idleClosing = false;
+
+            const wasForced = this.forceReconnect;
+            this.forceReconnect = false;
+
             this.registered = false;
-            this.invalidatePairCode();
             this.awaitingRegisterOk = false;
             this.clearRegisterTimer();
 
-            // Provide actionable error messages based on close code
             const preserveStatus = this.status === STATUS.UNAUTHORIZED ||
-                this.status === STATUS.WRONG_ENDPOINT ||
                 this.status === STATUS.CONFIG_ERROR;
 
-            if (wasAwaitingRegister && !preserveStatus) {
-                // Relay closed before we received register_ok
-                const errorMsg = `Relay closed before register_ok (code=${code} reason=${reasonStr || 'none'})`;
-                console.error(`[relay] ${errorMsg}`);
-                this.setStatus(STATUS.ERROR, errorMsg);
-            } else if (code === 1006) {
-                console.error('[relay] Abnormal close (code 1006): Connection was terminated unexpectedly.');
-                if (!preserveStatus) {
+            if (wasIdleClose) {
+                this.setStatus(STATUS.IDLE);
+                return;
+            }
+
+            if (!preserveStatus) {
+                if (code === 1006) {
                     this.setStatus(STATUS.DISCONNECTED, '1006 Abnormal close: relay server unavailable or rejected connection.');
+                } else {
+                    const closeMsg = code ? `Connection closed: ${code}` : 'Connection closed';
+                    this.setStatus(STATUS.DISCONNECTED, closeMsg);
                 }
-            } else if (!preserveStatus) {
-                const closeMsg = code ? `Connection closed: ${code}` : 'Connection closed';
-                this.setStatus(STATUS.DISCONNECTED, closeMsg);
             }
 
             this.emit('disconnected');
 
+            if (wasForced) {
+                this.reconnectDelay = this.baseReconnectDelay;
+                this.connect();
+                return;
+            }
+
             if (this.shouldRetry) {
                 this.scheduleReconnect();
-            } else {
-                console.log('[relay] Not reconnecting due to configuration/authorization error.');
             }
         });
 
         this.ws.on('error', (err) => {
             console.error(`[relay] WebSocket error: ${err.message}`);
-            // Don't set status here - let close handler do it with proper code
         });
     }
 
-    /**
-     * Register this bridge with the relay
-     */
+    handleUnauthorized(reason) {
+        const errorMsg = `Unauthorized: ${reason}`;
+        console.error(`[relay] ${errorMsg}`);
+        this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
+        this.agentToken = null;
+        this.tokenExpiresAt = null;
+        this.forceReconnect = true;
+        if (this.ws) this.ws.close(1008, 'unauthorized');
+    }
+
     register() {
         this.setStatus(STATUS.REGISTERING);
         this.awaitingRegisterOk = true;
         this.startRegisterTimeout();
+
         const homeId = this.homeId || this.locationName || 'unknown';
         const msg = {
             type: 'register_bridge',
-            pair_code: this.pendingPairCode,
+            pair_code: identity.getPairCode(),
             home_id: homeId
         };
-        console.log(`[relay] Sent register_bridge pair_code=${this.pendingPairCode} home_id=${homeId}`);
+
+        const agentId = identity.getAgentId();
+        if (agentId) msg.agent_id = agentId;
+
+        console.log(`[relay] Sent register_bridge home_id=${homeId}`);
         this.send(msg);
     }
 
-    /**
-     * Handle incoming message from relay
-     */
     async handleMessage(data) {
         let msg;
         try {
@@ -369,19 +625,8 @@ class RelayClient extends EventEmitter {
 
         switch (msg.type) {
             case 'agent_ok':
-                // Legacy: some relay servers may still send agent_ok
-                console.log('[relay] Received agent_ok (ignored, already registered)');
+                console.log('[relay] Received agent_ok (ignored)');
                 break;
-
-            case 'agent_unauthorized': {
-                const errorMsg = '401 Unauthorized: token mismatch or RELAY_TOKEN not set on relay worker.';
-                console.error(`[relay] ${errorMsg}`);
-                this.shouldRetry = false;
-                this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
-                this.invalidatePairCode();
-                if (this.ws) this.ws.close(1008, 'unauthorized');
-                break;
-            }
 
             case 'register_ok': {
                 if (!this.awaitingRegisterOk) {
@@ -392,14 +637,11 @@ class RelayClient extends EventEmitter {
                 this.registered = true;
                 this.awaitingRegisterOk = false;
                 this.clearRegisterTimer();
-                const ackCode = msg.pair_code || this.pendingPairCode;
-                if (msg.pair_code && msg.pair_code !== this.pendingPairCode) {
-                    console.warn(`[relay] register_ok pair_code mismatch (expected ${this.pendingPairCode}, got ${msg.pair_code})`);
+                if (msg.agent_id) {
+                    identity.setAgentId(msg.agent_id);
                 }
-                this.pairCode = ackCode;
-                this.pendingPairCode = ackCode;
                 this.lastError = null;
-                this.setStatus(STATUS.CONNECTED);
+                this.setStatus(STATUS.REGISTERED);
                 this.emit('registered');
                 break;
             }
@@ -409,21 +651,36 @@ class RelayClient extends EventEmitter {
                 this.registered = true;
                 this.awaitingRegisterOk = false;
                 this.clearRegisterTimer();
-                this.pairCode = this.pendingPairCode;
+                if (msg.agent_id) {
+                    identity.setAgentId(msg.agent_id);
+                }
                 this.lastError = null;
-                this.setStatus(STATUS.CONNECTED);
+                this.setStatus(STATUS.REGISTERED);
                 this.emit('registered');
                 break;
 
             case 'paired':
                 console.log('[relay] Bridge paired with remote client');
-                this.pairCode = null; // Invalidate pair code after use
-                this.pendingPairCode = null;
                 this.emit('paired', msg.client_id);
                 break;
 
+            case 'app_count':
+                this.updateAppCount(msg.app_count);
+                break;
+
+            case 'viewer_online':
+                this.updateAppCount(1);
+                break;
+
+            case 'viewer_offline':
+                this.updateAppCount(0);
+                break;
+
+            case 'agent_unauthorized':
+                this.handleUnauthorized('agent_unauthorized');
+                break;
+
             case 'call_service':
-                // Forward service call to HA
                 try {
                     const result = await haWS.callService(
                         msg.domain,
@@ -448,7 +705,6 @@ class RelayClient extends EventEmitter {
                 break;
 
             case 'get_states':
-                // Forward state request to HA
                 try {
                     const states = await haWS.request({ type: 'get_states' });
                     this.send({
@@ -473,144 +729,122 @@ class RelayClient extends EventEmitter {
                 const errorStr = msg.error || 'unknown error';
                 console.error(`[relay] Relay error: ${errorStr}`);
 
-                // Handle unauthorized error gracefully - don't crash
                 if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
-                    const errorMsg = 'Unauthorized: RELAY_TOKEN mismatch or not set on Worker. Check add-on config and Worker environment.';
-                    console.error(`[relay] ${errorMsg}`);
-                    this.shouldRetry = false; // Stop retry loop
-                    this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
-                    this.invalidatePairCode();
-                    this.awaitingRegisterOk = false;
-                    this.clearRegisterTimer();
-                    if (this.ws) this.ws.close(1008, 'unauthorized');
+                    this.handleUnauthorized('relay_error');
                 } else {
-                    // For other errors, set error status but don't crash
                     this.setStatus(STATUS.ERROR, `Relay error: ${errorStr}`);
                 }
                 break;
             }
 
             default:
-                console.log('[relay] Unknown message type:', msg.type);
+                break;
         }
     }
 
-    /**
-     * Send message to relay
-     */
     send(msg) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(msg));
         }
     }
 
-    /**
-     * Forward a state change event to relay
-     */
     forwardStateChange(data) {
-        if (this.registered) {
-            this.send({
-                type: 'state_changed',
-                data
-            });
-        }
+        if (!this.registered) return;
+        if (this.appCount === 0) return;
+        this.send({
+            type: 'state_changed',
+            data
+        });
     }
 
-    /**
-     * Schedule reconnection with exponential backoff
-     */
     scheduleReconnect() {
         if (this.reconnectTimer || !this.enabled || !this.shouldRetry) return;
 
-        console.log(`[relay] Reconnecting in ${this.reconnectDelay / 1000}s...`);
+        const jitter = Math.random() * 0.3 * this.reconnectDelay;
+        const delay = Math.min(this.reconnectDelay + jitter, this.maxReconnectDelay);
+
+        console.log(`[relay] Reconnecting in ${Math.round(delay / 1000)}s...`);
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             this.connect();
-        }, this.reconnectDelay);
+        }, delay);
 
-        // Exponential backoff: double the delay up to max
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
     }
 
-    /**
-     * Stop relay connection
-     */
     stop() {
         console.log('[relay] Stopping relay connection');
         this.enabled = false;
         this.shouldRetry = false;
         this.awaitingRegisterOk = false;
         this.clearRegisterTimer();
+        this.clearTokenRefreshTimer();
+        this.clearIdleTimer();
+        this.clearIdlePoll();
+
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+
         if (this.ws) {
             this.ws.close();
             this.ws = null;
         }
+
         this.registered = false;
-        this.invalidatePairCode();
         this.setStatus(STATUS.DISCONNECTED);
     }
 
-    /**
-     * Check if token looks valid (non-empty, reasonable length)
-     */
-    tokenLooksValid() {
-        return !!RELAY_TOKEN && RELAY_TOKEN.length >= 8;
-    }
-
-    /**
-     * Check if relay URL looks valid
-     */
-    relayUrlLooksValid() {
-        if (!RELAY_URL) return false;
-        return RELAY_URL.startsWith('ws://') || RELAY_URL.startsWith('wss://');
-    }
-
-    /**
-     * Derive HTTP origin from WebSocket URL (wss->https, ws->http)
-     */
-    getWorkerHttpOrigin() {
-        if (!RELAY_URL) return null;
-        try {
-            const url = new URL(RELAY_URL);
-            url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-            // Remove path, return origin only
-            return url.origin;
-        } catch {
-            return null;
+    regeneratePairCode() {
+        const code = identity.regeneratePairCode();
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.register();
         }
+        return code;
     }
 
-    /**
-     * Get relay status with detailed information
-     */
+    setPairCode(code) {
+        const ok = identity.setPairCode(code);
+        if (ok && this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.register();
+        }
+        return ok;
+    }
+
+    getPairCode() {
+        return identity.getPairCode();
+    }
+
+    getWorkerHttpOrigin() {
+        return this.relayOrigin;
+    }
+
     getStatus() {
-        const tokenLen = RELAY_TOKEN ? RELAY_TOKEN.length : 0;
+        const now = Date.now();
+        const tokenExpiresIn = this.tokenExpiresAt ? Math.max(0, Math.floor((this.tokenExpiresAt - now) / 1000)) : null;
         return {
             configured: this.isConfigured(),
-            configErrors: this.getConfigErrors(),
+            config_errors: this.getConfigErrors(),
             enabled: this.enabled,
-            connected: this.ws && this.ws.readyState === WebSocket.OPEN,
+            relay_connected: this.ws && this.ws.readyState === WebSocket.OPEN,
             registered: this.registered,
             status: this.status,
-            lastError: this.lastError,
-            pairCode: this.getPairCode(), // Only returns code if registered
-            pendingPairCode: this.pendingPairCode, // For debugging
-            relayUrl: RELAY_URL || null,
-            relayUrlLooksValid: this.relayUrlLooksValid(),
-            hasToken: !!RELAY_TOKEN,
-            tokenLength: tokenLen,
-            tokenLooksValid: this.tokenLooksValid(),
-            workerHttpOrigin: this.getWorkerHttpOrigin(),
-            shouldRetry: this.shouldRetry,
-            reconnectDelay: this.reconnectDelay
+            last_error: this.lastError,
+            pair_code: identity.getPairCode(),
+            agent_id: identity.getAgentId(),
+            relay_origin: this.relayOrigin,
+            relay_origin_source: this.relayOriginSource,
+            worker_http_origin: this.getWorkerHttpOrigin(),
+            idle_state: this.idleState,
+            app_count: this.appCount,
+            token_set: !!this.agentToken,
+            token_expires_in: tokenExpiresIn,
+            should_retry: this.shouldRetry,
+            reconnect_delay_ms: this.reconnectDelay
         };
     }
 }
 
-// Export singleton instance
 const relay = new RelayClient();
 module.exports = relay;

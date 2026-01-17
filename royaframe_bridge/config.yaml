@@ -31,17 +31,7 @@ boot: auto
 # Resource management
 init: false
 
-# Add-on options for relay configuration
-options:
-  relay_url: ""
-  relay_token: ""
-
-schema:
-  relay_url: str?
-  relay_token: password?
-
 # Container environment
 environment:
   NODE_ENV: production
-  RELAY_URL: "{{ .relay_url }}"
-  RELAY_TOKEN: "{{ .relay_token }}"
+  RELAY_URL: "https://digital-twin.lavvimaa.workers.dev"

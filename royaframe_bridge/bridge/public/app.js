@@ -66,11 +66,13 @@ function getRelayStatusDisplay(status) {
         'disconnected': { text: 'Disconnected', ok: false, class: 'status-error' },
         'config_error': { text: 'Config Error', ok: false, class: 'status-error' },
         'connecting': { text: 'Connecting...', ok: false, class: 'status-loading' },
+        'authenticating': { text: 'Authenticating...', ok: false, class: 'status-loading' },
         'connected': { text: 'Connected', ok: true, class: 'status-ok' },
         'registering': { text: 'Registering...', ok: false, class: 'status-loading' },
         'registered': { text: 'Registered', ok: true, class: 'status-ok' },
-        'unauthorized': { text: 'Unauthorized (token mismatch)', ok: false, class: 'status-error' },
+        'unauthorized': { text: 'Unauthorized', ok: false, class: 'status-error' },
         'wrong_endpoint': { text: 'Wrong Endpoint', ok: false, class: 'status-error' },
+        'idle': { text: 'Idle (no viewers)', ok: true, class: 'status-ok' },
         'error': { text: 'Error', ok: false, class: 'status-error' }
     };
     return statusMap[status] || { text: status || 'Unknown', ok: false, class: 'status-error' };
@@ -91,24 +93,28 @@ function updateRelayUI(relayStatus) {
 
     // Update relay info display
     if (relayInfoEl) {
-        const urlDisplay = relayStatus?.relayUrl || 'Not set';
-        const tokenDisplay = relayStatus?.hasToken ? 'Set' : 'Not set';
+        const urlDisplay = relayStatus?.relay_origin || 'Not set';
+        const agentIdDisplay = relayStatus?.agent_id || '-';
+        const idleDisplay = relayStatus?.idle_state || 'unknown';
+        const appCountDisplay = relayStatus?.app_count ?? '-';
         relayInfoEl.innerHTML = `
-            <div class="relay-info-item"><strong>URL:</strong> <code>${escapeHtml(urlDisplay)}</code></div>
-            <div class="relay-info-item"><strong>Token:</strong> ${tokenDisplay}</div>
+            <div class="relay-info-item"><strong>Relay Origin:</strong> <code>${escapeHtml(urlDisplay)}</code></div>
+            <div class="relay-info-item"><strong>Agent ID:</strong> <code>${escapeHtml(agentIdDisplay)}</code></div>
+            <div class="relay-info-item"><strong>Idle State:</strong> ${escapeHtml(String(idleDisplay))}</div>
+            <div class="relay-info-item"><strong>Viewers:</strong> ${escapeHtml(String(appCountDisplay))}</div>
         `;
     }
 
     // Show config errors or last error
     if (relayErrorEl) {
-        const hasConfigErrors = relayStatus?.configErrors?.length > 0;
-        const hasLastError = relayStatus?.lastError;
+        const hasConfigErrors = relayStatus?.config_errors?.length > 0;
+        const hasLastError = relayStatus?.last_error;
 
         if (hasConfigErrors) {
-            relayErrorEl.innerHTML = `<strong>Config Error:</strong> ${escapeHtml(relayStatus.configErrors.join('; '))}`;
+            relayErrorEl.innerHTML = `<strong>Config Error:</strong> ${escapeHtml(relayStatus.config_errors.join('; '))}`;
             relayErrorEl.style.display = 'block';
         } else if (hasLastError && !relayStatus?.registered) {
-            relayErrorEl.innerHTML = `<strong>Last Error:</strong> ${escapeHtml(relayStatus.lastError)}`;
+            relayErrorEl.innerHTML = `<strong>Last Error:</strong> ${escapeHtml(relayStatus.last_error)}`;
             relayErrorEl.style.display = 'block';
         } else {
             relayErrorEl.style.display = 'none';
@@ -131,25 +137,28 @@ function updateRelayUI(relayStatus) {
     if (relayStatus.enabled) {
         setStatus('relay-status', statusDisplay.ok, statusDisplay.text);
 
-        // Only show pair code if registered AND pair code exists
-        if (relayStatus.registered && relayStatus.pairCode) {
-            pairCodeEl.textContent = relayStatus.pairCode;
+        // Always show pair code when available
+        if (relayStatus.pair_code) {
+            pairCodeEl.textContent = relayStatus.pair_code;
             pairCodeDisplay.style.display = 'block';
-            pairCodeDisplay.classList.remove('pair-code-invalid');
-        } else if (relayStatus.pendingPairCode && !relayStatus.registered) {
-            // Show pending state - waiting for registration
+            if (relayStatus.relay_connected) {
+                pairCodeDisplay.classList.remove('pair-code-invalid');
+            } else {
+                pairCodeDisplay.classList.add('pair-code-invalid');
+            }
+        } else {
             pairCodeEl.textContent = '------';
             pairCodeDisplay.style.display = 'block';
             pairCodeDisplay.classList.add('pair-code-invalid');
-        } else {
-            pairCodeDisplay.style.display = 'none';
         }
 
-        pairBtn.style.display = 'none';
+        pairBtn.style.display = 'inline-block';
         stopBtn.style.display = 'inline-block';
     } else {
         setStatus('relay-status', false, 'Stopped');
-        pairCodeDisplay.style.display = 'none';
+        pairCodeDisplay.style.display = 'block';
+        pairCodeEl.textContent = relayStatus?.pair_code || '------';
+        pairCodeDisplay.classList.add('pair-code-invalid');
         pairBtn.style.display = 'inline-block';
         stopBtn.style.display = 'none';
     }
@@ -189,7 +198,7 @@ async function checkHaConnection() {
 async function startPairing() {
     const btn = document.getElementById('pair-btn');
     btn.disabled = true;
-    btn.textContent = 'Starting...';
+    btn.textContent = 'Regenerating...';
 
     try {
         const result = await api('/relay/pair', {
@@ -199,11 +208,11 @@ async function startPairing() {
         });
         updateRelayUI(result.status);
     } catch (error) {
-        alert('Failed to start pairing: ' + error.message);
+        alert('Failed to regenerate pair code: ' + error.message);
     }
 
     btn.disabled = false;
-    btn.textContent = 'Generate Pair Code';
+    btn.textContent = 'Regenerate Pair Code';
 }
 
 /**

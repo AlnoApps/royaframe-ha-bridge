@@ -19,7 +19,7 @@ console.log(`[env] RELAY_URL=${process.env.RELAY_URL}`);
  * Fetch worker status with timeout (does not leak token)
  */
 async function fetchWorkerStatus(timeoutMs = 2000) {
-    const httpOrigin = relay.getStatus().workerHttpOrigin;
+    const httpOrigin = relay.getWorkerHttpOrigin();
     if (!httpOrigin) {
         return { error: 'RELAY_URL not configured or invalid' };
     }
@@ -174,7 +174,8 @@ async function handleApi(req, res) {
                 break;
 
             case '/relay/status':
-                sendJson(res, relay.getStatus());
+                const workerStatus = await fetchWorkerStatus(2000);
+                sendJson(res, { ...relay.getStatus(), worker_status: workerStatus });
                 break;
 
             case '/relay/worker-status': {
@@ -190,11 +191,15 @@ async function handleApi(req, res) {
                 }
                 const body = await parseBody(req);
 
-                // Set custom pair code if provided
+                // Regenerate pair code unless a specific valid code is provided
                 if (body.pair_code) {
-                    relay.setPairCode(body.pair_code);
-                } else if (!relay.getPairCode()) {
-                    relay.generatePairCode();
+                    const ok = relay.setPairCode(body.pair_code);
+                    if (!ok) {
+                        sendJson(res, { error: 'Invalid pair_code (expected 6 hex chars)' }, 400);
+                        break;
+                    }
+                } else {
+                    relay.regeneratePairCode();
                 }
 
                 // Start relay connection
@@ -205,6 +210,16 @@ async function handleApi(req, res) {
                     pair_code: relay.getPairCode(),
                     status: relay.getStatus()
                 });
+                break;
+
+            case '/relay/regenerate-code':
+                if (req.method !== 'POST') {
+                    sendJson(res, { error: 'Method not allowed' }, 405);
+                    break;
+                }
+                relay.regeneratePairCode();
+                await relay.start();
+                sendJson(res, { pair_code: relay.getPairCode(), status: relay.getStatus() });
                 break;
 
             case '/relay/stop':
@@ -270,6 +285,11 @@ wsServer.init(server);
 
 // Connect to Home Assistant WebSocket
 haWS.connect();
+
+// Start relay immediately (auto-auth + connect)
+relay.start().catch((err) => {
+    console.error(`[relay] Failed to start: ${err.message}`);
+});
 
 // Forward state changes to relay if connected
 haWS.on('state_changed', (data) => {
