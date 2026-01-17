@@ -10,9 +10,9 @@ const crypto = require('crypto');
 const haWS = require('./haWebSocket');
 const ha = require('./ha');
 
-// Environment configuration
-const RELAY_URL = process.env.RELAY_URL;
-const RELAY_TOKEN = process.env.RELAY_TOKEN;
+// Environment configuration (trim to avoid whitespace issues)
+const RELAY_URL = (process.env.RELAY_URL || '').trim();
+const RELAY_TOKEN = (process.env.RELAY_TOKEN || '').trim();
 
 // Connection status constants
 const STATUS = {
@@ -226,9 +226,10 @@ class RelayClient extends EventEmitter {
         }
 
         this.setStatus(STATUS.CONNECTING);
-        const hasToken = !!(RELAY_TOKEN && RELAY_TOKEN.trim());
+        const hasToken = !!RELAY_TOKEN;
+        const tokenLen = RELAY_TOKEN ? RELAY_TOKEN.length : 0;
         console.log(`[relay] Connecting to ${RELAY_URL}`);
-        console.log(`[relay] Authorization: Bearer <token> (token set: ${hasToken})`);
+        console.log(`[relay] Authorization: Bearer <token> (token set: ${hasToken}, length: ${tokenLen})`);
 
         try {
             this.ws = new WebSocket(RELAY_URL, {
@@ -249,7 +250,12 @@ class RelayClient extends EventEmitter {
             let errorMsg;
 
             if (statusCode === 401) {
-                errorMsg = '401 Unauthorized: token mismatch or RELAY_TOKEN not set on relay worker.';
+                // Best-effort diagnosis: we can only know our own state
+                if (!RELAY_TOKEN) {
+                    errorMsg = '401 Unauthorized: add-on RELAY_TOKEN is empty. Set relay_token in add-on config.';
+                } else {
+                    errorMsg = '401 Unauthorized: worker secret missing or token mismatch. Check worker /api/status and verify RELAY_TOKEN matches.';
+                }
                 this.shouldRetry = false; // Don't retry auth errors
                 this.setStatus(STATUS.UNAUTHORIZED, errorMsg);
             } else if (statusCode === 400) {
@@ -549,9 +555,40 @@ class RelayClient extends EventEmitter {
     }
 
     /**
+     * Check if token looks valid (non-empty, reasonable length)
+     */
+    tokenLooksValid() {
+        return !!RELAY_TOKEN && RELAY_TOKEN.length >= 8;
+    }
+
+    /**
+     * Check if relay URL looks valid
+     */
+    relayUrlLooksValid() {
+        if (!RELAY_URL) return false;
+        return RELAY_URL.startsWith('ws://') || RELAY_URL.startsWith('wss://');
+    }
+
+    /**
+     * Derive HTTP origin from WebSocket URL (wss->https, ws->http)
+     */
+    getWorkerHttpOrigin() {
+        if (!RELAY_URL) return null;
+        try {
+            const url = new URL(RELAY_URL);
+            url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+            // Remove path, return origin only
+            return url.origin;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Get relay status with detailed information
      */
     getStatus() {
+        const tokenLen = RELAY_TOKEN ? RELAY_TOKEN.length : 0;
         return {
             configured: this.isConfigured(),
             configErrors: this.getConfigErrors(),
@@ -563,7 +600,11 @@ class RelayClient extends EventEmitter {
             pairCode: this.getPairCode(), // Only returns code if registered
             pendingPairCode: this.pendingPairCode, // For debugging
             relayUrl: RELAY_URL || null,
+            relayUrlLooksValid: this.relayUrlLooksValid(),
             hasToken: !!RELAY_TOKEN,
+            tokenLength: tokenLen,
+            tokenLooksValid: this.tokenLooksValid(),
+            workerHttpOrigin: this.getWorkerHttpOrigin(),
             shouldRetry: this.shouldRetry,
             reconnectDelay: this.reconnectDelay
         };

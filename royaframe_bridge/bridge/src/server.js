@@ -15,6 +15,41 @@ const relay = require('./relay');
 const PORT = 8099; // Must match ingress_port in config.yaml
 console.log(`[env] RELAY_URL=${process.env.RELAY_URL}`);
 
+/**
+ * Fetch worker status with timeout (does not leak token)
+ */
+async function fetchWorkerStatus(timeoutMs = 2000) {
+    const httpOrigin = relay.getStatus().workerHttpOrigin;
+    if (!httpOrigin) {
+        return { error: 'RELAY_URL not configured or invalid' };
+    }
+
+    const statusUrl = `${httpOrigin}/api/status`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(statusUrl, {
+            signal: controller.signal,
+            headers: { 'Accept': 'application/json' }
+        });
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            return { error: `HTTP ${response.status}`, url: statusUrl };
+        }
+
+        const data = await response.json();
+        return { ok: true, url: statusUrl, data };
+    } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+            return { error: `Timeout after ${timeoutMs}ms`, url: statusUrl };
+        }
+        return { error: err.message, url: statusUrl };
+    }
+}
+
 // MIME types for static files
 const MIME_TYPES = {
     '.html': 'text/html',
@@ -86,7 +121,9 @@ async function handleApi(req, res) {
 
     try {
         switch (pathname) {
-            case '/health':
+            case '/health': {
+                // Fetch worker status with short timeout (best-effort)
+                const workerStatus = await fetchWorkerStatus(2000);
                 sendJson(res, {
                     status: 'ok',
                     service: 'royaframe-bridge',
@@ -94,9 +131,11 @@ async function handleApi(req, res) {
                     timestamp: new Date().toISOString(),
                     ha_connected: haWS.isConnected(),
                     ws_clients: wsServer.getClientCount(),
-                    relay: relay.getStatus()
+                    relay: relay.getStatus(),
+                    relayWorkerStatus: workerStatus
                 });
                 break;
+            }
 
             case '/ha/info':
                 const config = await ha.getConfig();
@@ -137,6 +176,12 @@ async function handleApi(req, res) {
             case '/relay/status':
                 sendJson(res, relay.getStatus());
                 break;
+
+            case '/relay/worker-status': {
+                const workerResult = await fetchWorkerStatus(5000);
+                sendJson(res, workerResult);
+                break;
+            }
 
             case '/relay/pair':
                 if (req.method !== 'POST') {
