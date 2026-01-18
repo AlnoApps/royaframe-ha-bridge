@@ -128,6 +128,9 @@ class RelayClient extends EventEmitter {
         this.homeId = null;
         this.status = STATUS.DISCONNECTED;
         this.lastError = null;
+        this.lastErrorFrame = null;
+        this.lastWsMessage = null;
+        this.lastWsMessageAt = null;
 
         this.appCount = null;
         this.lastAppCountAt = null;
@@ -208,6 +211,8 @@ class RelayClient extends EventEmitter {
             if (!this.awaitingRegisterOk) return;
             const errorMsg = 'Registration timeout: expected register_ok from relay';
             console.error(`[relay] ${errorMsg}`);
+            const lastErrorFrame = this.lastErrorFrame ? JSON.stringify(this.lastErrorFrame) : 'none';
+            console.error(`[relay] Last error frame before timeout: ${lastErrorFrame}`);
             this.setStatus(STATUS.ERROR, errorMsg);
             if (this.ws) this.ws.terminate();
         }, REGISTER_TIMEOUT_MS);
@@ -528,6 +533,10 @@ class RelayClient extends EventEmitter {
             return;
         }
 
+        this.lastErrorFrame = null;
+        this.lastWsMessage = null;
+        this.lastWsMessageAt = null;
+
         this.ws.on('unexpected-response', (req, res) => {
             const statusCode = res.statusCode;
             const errorMsg = `HTTP ${statusCode} during WebSocket upgrade`;
@@ -555,9 +564,18 @@ class RelayClient extends EventEmitter {
         });
 
         this.ws.on('message', (data) => {
+            const raw = data.toString();
+            this.lastWsMessage = raw;
+            this.lastWsMessageAt = Date.now();
+
+            if (this.awaitingRegisterOk) {
+                const preview = raw.length > 500 ? `${raw.slice(0, 500)}...` : raw;
+                console.log(`[relay] WS message during registration: ${preview}`);
+            }
+
             // Log every message type for debugging
             try {
-                const parsed = JSON.parse(data.toString());
+                const parsed = JSON.parse(raw);
                 console.log(`[relay] WS message received: type=${parsed.type || 'unknown'}`);
             } catch {
                 console.log('[relay] WS message received: (unparseable)');
@@ -569,6 +587,9 @@ class RelayClient extends EventEmitter {
             const reasonStr = reason ? reason.toString() : '';
             console.log(`[relay] WS close code=${code} reason=${reasonStr}`);
 
+            const wasAwaitingRegisterOk = this.awaitingRegisterOk;
+            const lastErrorFrame = this.lastErrorFrame;
+
             const wasIdleClose = this.idleClosing;
             this.idleClosing = false;
 
@@ -578,6 +599,11 @@ class RelayClient extends EventEmitter {
             this.registered = false;
             this.awaitingRegisterOk = false;
             this.clearRegisterTimer();
+
+            if (wasAwaitingRegisterOk) {
+                const errorDetail = lastErrorFrame ? JSON.stringify(lastErrorFrame) : 'none';
+                console.warn(`[relay] WS closed before register_ok. Last error frame: ${errorDetail}`);
+            }
 
             const preserveStatus = this.status === STATUS.UNAUTHORIZED ||
                 this.status === STATUS.CONFIG_ERROR;
@@ -678,7 +704,8 @@ class RelayClient extends EventEmitter {
                     console.warn('[relay] Unexpected register_ok; ignoring.');
                     break;
                 }
-                console.log('[relay] Received register_ok -> registration successful!');
+                const traceId = typeof msg.trace_id === 'string' ? msg.trace_id : '';
+                console.log(`[relay] Received register_ok -> registration successful! trace_id=${traceId || 'none'}`);
                 this.registered = true;
                 this.awaitingRegisterOk = false;
                 this.clearRegisterTimer();
@@ -773,7 +800,18 @@ class RelayClient extends EventEmitter {
 
             case 'error': {
                 const errorStr = msg.error || 'unknown error';
-                console.error(`[relay] Relay error: ${errorStr}`);
+                const errorMessage = typeof msg.message === 'string' ? msg.message : '';
+                const traceId = typeof msg.trace_id === 'string' ? msg.trace_id : '';
+                this.lastErrorFrame = {
+                    error: errorStr,
+                    message: errorMessage || null,
+                    trace_id: traceId || null
+                };
+                const details = [];
+                if (errorMessage) details.push(`message=${errorMessage}`);
+                if (traceId) details.push(`trace_id=${traceId}`);
+                const detailStr = details.length ? ` (${details.join(', ')})` : '';
+                console.error(`[relay] Relay error: ${errorStr}${detailStr}`);
 
                 if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
                     this.handleUnauthorized('relay_error');
