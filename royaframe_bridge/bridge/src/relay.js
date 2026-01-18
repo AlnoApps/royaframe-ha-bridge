@@ -892,6 +892,30 @@ class RelayClient extends EventEmitter {
         // Get key info for key_ok field (only sizes, no secrets)
         const keyInfo = identity.getKeyInfo();
 
+        // Determine UI state for frontend display
+        let uiState = 'disconnected';
+        if (!this.isConfigured()) {
+            uiState = 'config_error';
+        } else if (!this.enabled) {
+            uiState = 'stopped';
+        } else if (this.registered) {
+            uiState = 'ready';  // ONLY show pair code in this state
+        } else if (this.status === STATUS.REGISTERING) {
+            uiState = 'registering';
+        } else if (this.status === STATUS.AUTHENTICATING) {
+            uiState = 'authenticating';
+        } else if (this.status === STATUS.CONNECTING || this.status === STATUS.CONNECTED) {
+            uiState = 'connecting';
+        } else if (this.status === STATUS.ERROR || this.status === STATUS.UNAUTHORIZED) {
+            uiState = 'error';
+        } else if (this.idleState === 'idle') {
+            uiState = 'idle';
+        }
+
+        // CRITICAL: Only expose pair_code when registered=true
+        // This prevents showing invalid codes to users
+        const pairCodeForDisplay = this.registered ? identity.getPairCode() : null;
+
         return {
             configured: this.isConfigured(),
             config_errors: this.getConfigErrors(),
@@ -899,8 +923,10 @@ class RelayClient extends EventEmitter {
             relay_connected: this.ws && this.ws.readyState === WebSocket.OPEN,
             registered: this.registered,
             status: this.status,
+            ui_state: uiState,  // For frontend: 'ready' | 'connecting' | 'registering' | 'error' | etc.
             last_error: this.lastError,
-            pair_code: identity.getPairCode(),
+            pair_code: pairCodeForDisplay,  // Only set when registered=true
+            pair_code_pending: !this.registered ? identity.getPairCode() : null,  // For debugging only
             agent_id: identity.getAgentId(),
             relay_origin: this.relayOrigin,
             relay_origin_source: this.relayOriginSource,

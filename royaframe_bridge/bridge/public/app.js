@@ -59,23 +59,23 @@ async function checkBridgeHealth() {
 }
 
 /**
- * Map relay status to display text and status class
+ * Map relay ui_state to display text and status class
+ * UI states: ready | connecting | authenticating | registering | error | config_error | stopped | idle | disconnected
  */
-function getRelayStatusDisplay(status) {
+function getRelayStatusDisplay(uiState) {
     const statusMap = {
-        'disconnected': { text: 'Disconnected', ok: false, class: 'status-error' },
-        'config_error': { text: 'Config Error', ok: false, class: 'status-error' },
-        'connecting': { text: 'Connecting...', ok: false, class: 'status-loading' },
-        'authenticating': { text: 'Authenticating...', ok: false, class: 'status-loading' },
-        'connected': { text: 'Connected', ok: true, class: 'status-ok' },
-        'registering': { text: 'Registering...', ok: false, class: 'status-loading' },
-        'registered': { text: 'Registered', ok: true, class: 'status-ok' },
-        'unauthorized': { text: 'Unauthorized', ok: false, class: 'status-error' },
-        'wrong_endpoint': { text: 'Wrong Endpoint', ok: false, class: 'status-error' },
-        'idle': { text: 'Idle (no viewers)', ok: true, class: 'status-ok' },
-        'error': { text: 'Error', ok: false, class: 'status-error' }
+        'ready': { text: 'Connected', ok: true, class: 'status-ok', showCode: true },
+        'idle': { text: 'Idle (no viewers)', ok: true, class: 'status-ok', showCode: true },
+        'connecting': { text: 'Connecting...', ok: false, class: 'status-loading', showCode: false },
+        'authenticating': { text: 'Authenticating...', ok: false, class: 'status-loading', showCode: false },
+        'registering': { text: 'Registering...', ok: false, class: 'status-loading', showCode: false },
+        'error': { text: 'Error', ok: false, class: 'status-error', showCode: false },
+        'config_error': { text: 'Config Error', ok: false, class: 'status-error', showCode: false },
+        'stopped': { text: 'Stopped', ok: false, class: 'status-error', showCode: false },
+        'disconnected': { text: 'Disconnected', ok: false, class: 'status-error', showCode: false },
+        'unauthorized': { text: 'Unauthorized', ok: false, class: 'status-error', showCode: false }
     };
-    return statusMap[status] || { text: status || 'Unknown', ok: false, class: 'status-error' };
+    return statusMap[uiState] || { text: uiState || 'Unknown', ok: false, class: 'status-error', showCode: false };
 }
 
 /**
@@ -95,12 +95,12 @@ function updateRelayUI(relayStatus) {
     if (relayInfoEl) {
         const urlDisplay = relayStatus?.relay_origin || 'Not set';
         const agentIdDisplay = relayStatus?.agent_id || '-';
-        const idleDisplay = relayStatus?.idle_state || 'unknown';
+        const uiStateDisplay = relayStatus?.ui_state || 'unknown';
         const appCountDisplay = relayStatus?.app_count ?? '-';
         relayInfoEl.innerHTML = `
             <div class="relay-info-item"><strong>Relay Origin:</strong> <code>${escapeHtml(urlDisplay)}</code></div>
             <div class="relay-info-item"><strong>Agent ID:</strong> <code>${escapeHtml(agentIdDisplay)}</code></div>
-            <div class="relay-info-item"><strong>Idle State:</strong> ${escapeHtml(String(idleDisplay))}</div>
+            <div class="relay-info-item"><strong>State:</strong> ${escapeHtml(String(uiStateDisplay))}</div>
             <div class="relay-info-item"><strong>Viewers:</strong> ${escapeHtml(String(appCountDisplay))}</div>
         `;
     }
@@ -124,29 +124,27 @@ function updateRelayUI(relayStatus) {
     if (!relayStatus || !relayStatus.configured) {
         if (notConfigured) notConfigured.style.display = 'block';
         if (configured) configured.style.display = 'none';
-        // Show info section even when not configured
         return;
     }
 
     if (notConfigured) notConfigured.style.display = 'none';
     if (configured) configured.style.display = 'block';
 
-    // Get display info from status
-    const statusDisplay = getRelayStatusDisplay(relayStatus.status);
+    // Get display info from ui_state (not raw status)
+    const statusDisplay = getRelayStatusDisplay(relayStatus.ui_state);
 
     if (relayStatus.enabled) {
         setStatus('relay-status', statusDisplay.ok, statusDisplay.text);
 
-        // Always show pair code when available
-        if (relayStatus.pair_code) {
+        // CRITICAL: Only show pair code when registered (ui_state === 'ready' or 'idle')
+        // The backend only sends pair_code when registered=true
+        if (relayStatus.pair_code && statusDisplay.showCode) {
+            // Registered and ready - show the valid pair code
             pairCodeEl.textContent = relayStatus.pair_code;
             pairCodeDisplay.style.display = 'block';
-            if (relayStatus.relay_connected) {
-                pairCodeDisplay.classList.remove('pair-code-invalid');
-            } else {
-                pairCodeDisplay.classList.add('pair-code-invalid');
-            }
+            pairCodeDisplay.classList.remove('pair-code-invalid');
         } else {
+            // Not yet registered - show placeholder with status message
             pairCodeEl.textContent = '------';
             pairCodeDisplay.style.display = 'block';
             pairCodeDisplay.classList.add('pair-code-invalid');
@@ -156,9 +154,7 @@ function updateRelayUI(relayStatus) {
         stopBtn.style.display = 'inline-block';
     } else {
         setStatus('relay-status', false, 'Stopped');
-        pairCodeDisplay.style.display = 'block';
-        pairCodeEl.textContent = relayStatus?.pair_code || '------';
-        pairCodeDisplay.classList.add('pair-code-invalid');
+        pairCodeDisplay.style.display = 'none';  // Hide pair code when stopped
         pairBtn.style.display = 'inline-block';
         stopBtn.style.display = 'none';
     }
