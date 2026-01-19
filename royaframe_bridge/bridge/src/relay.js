@@ -81,8 +81,10 @@ function resolveRelayOrigin() {
 
 function extractAppCount(data) {
     if (!data || typeof data !== 'object') return null;
+    // Prefer device count (unique clients) over tab count for user-friendly display
     const keys = [
-        'app_count',
+        'app_count_devices',  // Unique devices (preferred for UI)
+        'app_count',          // Total tabs (backwards compatibility)
         'appCount',
         'viewer_count',
         'viewerCount',
@@ -862,7 +864,15 @@ class RelayClient extends EventEmitter {
                 const detailStr = details.length ? ` (${details.join(', ')})` : '';
                 console.error(`[relay] Relay error: ${errorStr}${detailStr}`);
 
-                if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
+                if (errorStr === 'need_register') {
+                    // Relay is telling us to send register_bridge again
+                    console.log('[relay] Received need_register error, resending register_bridge...');
+                    if (!this.registered && !this.awaitingRegisterOk) {
+                        this.register();
+                    } else {
+                        console.log(`[relay] Skipping re-register: registered=${this.registered}, awaitingRegisterOk=${this.awaitingRegisterOk}`);
+                    }
+                } else if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
                     this.handleUnauthorized('relay_error');
                 } else {
                     this.setStatus(STATUS.ERROR, `Relay error: ${errorStr}`);
