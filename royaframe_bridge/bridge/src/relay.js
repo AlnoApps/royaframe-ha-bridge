@@ -758,19 +758,20 @@ class RelayClient extends EventEmitter {
                     const result = await haWS.callService(
                         msg.domain,
                         msg.service,
-                        msg.data || {},
+                        msg.service_data || msg.data || {},
                         msg.target || {}
                     );
+                    // Web app expects { type: 'result', id: <number>, success: true, result }
                     this.send({
-                        type: 'service_result',
-                        request_id: msg.request_id,
+                        type: 'result',
+                        id: msg.id,
                         success: true,
                         result
                     });
                 } catch (err) {
                     this.send({
-                        type: 'service_result',
-                        request_id: msg.request_id,
+                        type: 'result',
+                        id: msg.id,
                         success: false,
                         error: err.message
                     });
@@ -791,6 +792,48 @@ class RelayClient extends EventEmitter {
                         request_id: msg.request_id,
                         error: err.message
                     });
+                }
+                break;
+
+            case 'subscribe_states':
+                // Web app is subscribing to state updates
+                // Send all current states as bulk sync, then continue forwarding state_changed
+                console.log('[relay] Received subscribe_states request');
+                try {
+                    const allStates = await haWS.request({ type: 'get_states' });
+                    // Transform to the format expected by web app
+                    const statesArray = Array.isArray(allStates) ? allStates : [];
+                    const formattedStates = statesArray.map(s => ({
+                        entity_id: s.entity_id,
+                        state: s.state,
+                        attributes: s.attributes || {},
+                        last_changed: s.last_changed,
+                        last_updated: s.last_updated,
+                    }));
+                    console.log(`[relay] Sending states_sync with ${formattedStates.length} entities`);
+                    this.send({
+                        type: 'states_sync',
+                        states: formattedStates
+                    });
+                    // Also send result for the pending promise
+                    if (msg.id) {
+                        this.send({
+                            type: 'result',
+                            id: msg.id,
+                            success: true,
+                            result: { count: formattedStates.length }
+                        });
+                    }
+                } catch (err) {
+                    console.error('[relay] Failed to fetch states for subscribe_states:', err.message);
+                    if (msg.id) {
+                        this.send({
+                            type: 'result',
+                            id: msg.id,
+                            success: false,
+                            error: err.message
+                        });
+                    }
                 }
                 break;
 
@@ -854,9 +897,17 @@ class RelayClient extends EventEmitter {
     forwardStateChange(data) {
         if (!this.registered) return;
         if (this.appCount === 0) return;
+
+        // Extract and flatten for web app compatibility
+        // data = { entity_id, new_state: { state, attributes, last_changed, last_updated }, old_state }
+        const newState = data.new_state || {};
         this.send({
             type: 'state_changed',
-            data
+            entity_id: data.entity_id,
+            state: newState.state,
+            attributes: newState.attributes || {},
+            last_changed: newState.last_changed,
+            last_updated: newState.last_updated,
         });
     }
 
