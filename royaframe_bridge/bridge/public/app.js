@@ -79,6 +79,22 @@ function getRelayStatusDisplay(uiState) {
 }
 
 /**
+ * Get user-friendly text for app client count
+ */
+function getAppClientsDisplay(appCount) {
+    if (appCount === null || appCount === undefined) {
+        return { text: 'Unknown', ok: false, class: 'status-loading' };
+    }
+    if (appCount === 0) {
+        return { text: 'No app connected', ok: false, class: 'status-loading' };
+    }
+    if (appCount === 1) {
+        return { text: 'Connected (1 device)', ok: true, class: 'status-ok' };
+    }
+    return { text: `Connected (${appCount} devices)`, ok: true, class: 'status-ok' };
+}
+
+/**
  * Update relay UI based on status
  */
 function updateRelayUI(relayStatus) {
@@ -136,6 +152,10 @@ function updateRelayUI(relayStatus) {
     if (relayStatus.enabled) {
         setStatus('relay-status', statusDisplay.ok, statusDisplay.text);
 
+        // Update app clients status with user-friendly text
+        const appClientsDisplay = getAppClientsDisplay(relayStatus.app_count);
+        setStatus('app-clients-status', appClientsDisplay.ok, appClientsDisplay.text);
+
         // CRITICAL: Only show pair code when registered (ui_state === 'ready' or 'idle')
         // The backend only sends pair_code when registered=true
         if (relayStatus.pair_code && statusDisplay.showCode) {
@@ -154,6 +174,7 @@ function updateRelayUI(relayStatus) {
         stopBtn.style.display = 'inline-block';
     } else {
         setStatus('relay-status', false, 'Stopped');
+        setStatus('app-clients-status', false, 'Relay stopped');
         pairCodeDisplay.style.display = 'none';  // Hide pair code when stopped
         pairBtn.style.display = 'inline-block';
         stopBtn.style.display = 'none';

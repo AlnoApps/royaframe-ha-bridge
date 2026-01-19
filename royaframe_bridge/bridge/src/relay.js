@@ -741,13 +741,19 @@ class RelayClient extends EventEmitter {
                 this.updateAppCount(msg.app_count);
                 break;
 
-            case 'viewer_online':
-                this.updateAppCount(1);
+            case 'viewer_online': {
+                // Extract actual app_count from message for multi-client support
+                const onlineCount = extractAppCount(msg);
+                this.updateAppCount(onlineCount !== null ? onlineCount : 1);
                 break;
+            }
 
-            case 'viewer_offline':
-                this.updateAppCount(0);
+            case 'viewer_offline': {
+                // Extract actual app_count from message (should be 0)
+                const offlineCount = extractAppCount(msg);
+                this.updateAppCount(offlineCount !== null ? offlineCount : 0);
                 break;
+            }
 
             case 'agent_unauthorized':
                 this.handleUnauthorized('agent_unauthorized');
