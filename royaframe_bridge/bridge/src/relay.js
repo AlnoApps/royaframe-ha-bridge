@@ -865,12 +865,14 @@ class RelayClient extends EventEmitter {
                 console.error(`[relay] Relay error: ${errorStr}${detailStr}`);
 
                 if (errorStr === 'need_register') {
-                    // Relay is telling us to send register_bridge again
+                    // Relay is telling us to send register_bridge again (e.g., after DO hibernation)
+                    // Always comply - relay knows registration state better than us
                     console.log('[relay] Received need_register error, resending register_bridge...');
-                    if (!this.registered && !this.awaitingRegisterOk) {
-                        this.register();
+                    if (this.awaitingRegisterOk) {
+                        console.log('[relay] Already awaiting register_ok, skipping duplicate register');
                     } else {
-                        console.log(`[relay] Skipping re-register: registered=${this.registered}, awaitingRegisterOk=${this.awaitingRegisterOk}`);
+                        this.registered = false; // Reset our state to match relay's
+                        this.register();
                     }
                 } else if (errorStr === 'unauthorized' || errorStr.includes('unauthorized')) {
                     this.handleUnauthorized('relay_error');
