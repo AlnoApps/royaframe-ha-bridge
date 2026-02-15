@@ -914,6 +914,8 @@ class RelayClient extends EventEmitter {
 
     forwardStateChange(data) {
         if (!this.registered) return;
+        // Only skip if we KNOW there are 0 apps (not null/undefined which means unknown)
+        // This avoids a race condition after re-registration where appCount hasn't been updated yet
         if (this.appCount === 0) return;
 
         // Extract and flatten for web app compatibility
